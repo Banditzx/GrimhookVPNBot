@@ -11,7 +11,7 @@
 ## ✨ Основные функции
 * **Автоматизация:** Выдача настраиваемого тестового периода новым пользователям.
 * **Подключение:** Генерация VLESS-ключей напрямую из бота через API 3x-ui.
-* **Оплата:** Интегрированная платежная система через Telegram Stars.
+* **Оплата и продление:** бот принимает оплату через Telegram Stars и автоматически продлевает подписку пользователя.
 * **Помощь:** Интерактивные инструкции по настройке для Android, iOS, Windows и macOS.
 * **Админ-панель:** Веб-интерфейс на Streamlit для управления пользователями, редактирования кода и просмотра логов.
 
@@ -47,23 +47,62 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Настройка конфигурации
-Создайте файл src/.env на основе src/.env.example и заполните следующие поля:
-BOT_TOKEN — токен вашего бота от @BotFather.
-ADMIN_PANEL_PASSWORD — пароль для входа в веб-админку. Используйте длинный случайный пароль; без него админ-панель не откроется.
-TRIAL_DAYS — длительность бесплатного тестового периода в днях.
-Цены подписок задаются в рублях через PRICE_1_DAY_RUB, PRICE_7_DAYS_RUB, PRICE_1_MONTH_RUB, PRICE_2_MONTHS_RUB, PRICE_3_MONTHS_RUB.
-Скидки задаются процентами через DISCOUNT_1_DAY_PERCENT, DISCOUNT_7_DAYS_PERCENT, DISCOUNT_1_MONTH_PERCENT, DISCOUNT_2_MONTHS_PERCENT, DISCOUNT_3_MONTHS_PERCENT.
-Бот конвертирует их в Telegram Stars по ручному курсу STAR_RUB_RATE и добавляет наценку STAR_PRICE_MARKUP_PERCENT.
-Параметры доступа к вашей панели 3x-ui: адрес панели, базовый путь, хост и API-токен XUI_TOKEN.
 
-## 2. Запустите веб-панель:
+## 2. Настройте конфигурацию
+
+Создайте файл `src/.env` на основе `src/.env.example` и заполните параметры:
+
+```env
+BOT_TOKEN=telegram_bot_token_from_botfather
+ADMINS=123456789
+ADMIN_PANEL_PASSWORD=long_random_password
+TRIAL_DAYS=1
+
+PRICE_1_DAY_RUB=25
+PRICE_7_DAYS_RUB=125
+PRICE_1_MONTH_RUB=350
+PRICE_2_MONTHS_RUB=700
+PRICE_3_MONTHS_RUB=1050
+
+DISCOUNT_1_DAY_PERCENT=0
+DISCOUNT_7_DAYS_PERCENT=0
+DISCOUNT_1_MONTH_PERCENT=0
+DISCOUNT_2_MONTHS_PERCENT=0
+DISCOUNT_3_MONTHS_PERCENT=0
+
+STAR_RUB_RATE=1.66
+STAR_PRICE_MARKUP_PERCENT=10
+
+XUI_API_URL=https://your-panel-domain:2053
+XUI_HOST=your-vpn-host
+XUI_BASE_PATH=/your-panel-secret-path
+XUI_SERVER_NAME=Grimhook VPN
+XUI_TOKEN=your_3x_ui_api_token
+INBOUND_ID=1
+```
+
+Основные параметры:
+
+* `BOT_TOKEN` — токен Telegram-бота от `@BotFather`.
+* `ADMINS` — Telegram ID администраторов через запятую.
+* `ADMIN_PANEL_PASSWORD` — пароль для входа в веб-админку. Используйте длинный случайный пароль; без него админ-панель не откроется.
+* `TRIAL_DAYS` — длительность бесплатного тестового периода в днях.
+* `PRICE_*_RUB` — цены тарифов в рублях.
+* `DISCOUNT_*_PERCENT` — скидки на тарифы в процентах.
+* `STAR_RUB_RATE` — ручной курс рубля к Telegram Stars.
+* `STAR_PRICE_MARKUP_PERCENT` — наценка к цене в Stars.
+* `XUI_API_URL`, `XUI_BASE_PATH`, `XUI_HOST`, `XUI_TOKEN` — параметры доступа к панели 3x-ui.
+* `INBOUND_ID` — ID inbound, где бот будет создавать VPN-профили.
+
+Пользователь оплачивает тариф Telegram Stars. После успешной оплаты бот сохраняет платеж, продлевает подписку в базе и синхронизирует срок действия VPN-профиля в 3x-ui.
+
+## 3. Запустите веб-панель:
 ```bash
 streamlit run admin_panel.py
 ```
 После запуска перейдите по адресу, который выдаст терминал (обычно порт 8501), и нажмите кнопку «Запустить бота».
 
-## 3. В веб-панели настройте токены и нажмите "Запустить бота".
+## 4. В веб-панели нажмите "Запустить бота".
 
 # 🛠 Технологический стек
 
