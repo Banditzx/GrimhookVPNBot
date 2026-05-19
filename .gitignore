@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files with real secrets
+.env
+.env.*
+!.env.example
+src/.env
+src/.env.*
+!src/.env.example
+
+# Databases and runtime state
+*.db
+*.sqlite
+*.sqlite3
+users.db
+src/users.db
+
+# Logs and process output
+*.log
+bot_error.log
+nohup.out
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Docker / local overrides
+docker-compose.override.yml
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local assistant metadata
+.agents/
+.codex/
