@@ -178,7 +178,7 @@ async def help_msg(callback: CallbackQuery):
     text = (
         f"О боте:\n"
         "<b>Разработчик:</b>\n"
-        "@Redulum\n"
+        "@Blackdogz\n"
         "<a href=''>Официальный чат проекта появится позже</a>"
     )
     await callback.message.answer(text, parse_mode='HTML', reply_markup=builder.as_markup())
