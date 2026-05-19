@@ -170,18 +170,41 @@ async def menu_cmd(message: Message, bot: Bot):
     
     await show_menu(bot, message.from_user.id)
 
+def build_help_text() -> str:
+    return (
+        "О боте:\n"
+        "<b>Разработчик:</b>\n"
+        "@Blackdogz\n"
+        "<b>Telegram бот:</b> @grimhook_vpn_bot"
+    )
+
+@router.message(Command("help"))
+async def help_cmd(message: Message):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ Назад", callback_data="back_to_menu")
+    await message.answer(build_help_text(), parse_mode="HTML", reply_markup=builder.as_markup())
+
 @router.callback_query(F.data == "help")
 async def help_msg(callback: CallbackQuery):
     await callback.answer()
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Назад", callback_data="back_to_menu")
-    text = (
-        f"О боте:\n"
-        "<b>Разработчик:</b>\n"
-        "@Blackdogz\n"
-        "<a href=''>Официальный чат проекта появится позже</a>"
+    await callback.message.answer(build_help_text(), parse_mode="HTML", reply_markup=builder.as_markup())
+
+@router.message(Command("paysupport"))
+async def pay_support_cmd(message: Message):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💬 Написать админу", callback_data="support_message")
+    builder.button(text="⬅️ Открыть меню", callback_data="back_to_menu")
+    builder.adjust(1)
+    await message.answer(
+        "💳 <b>Оплата другим способом</b>\n\n"
+        "VPN можно оплатить переводом на карту. "
+        "Для получения реквизитов и ручного продления подписки воспользуйтесь кнопкой «Написать админу».\n\n"
+        "В сообщении укажите нужный тариф и ваш Telegram ID.",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup(),
     )
-    await callback.message.answer(text, parse_mode='HTML', reply_markup=builder.as_markup())
 
 @router.callback_query(F.data == "support_message")
 async def support_message_start(callback: CallbackQuery, state: FSMContext):

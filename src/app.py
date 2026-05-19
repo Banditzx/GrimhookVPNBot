@@ -5,7 +5,7 @@ import warnings
 import coloredlogs
 from config import config
 from aiogram import Bot, Dispatcher
-from aiogram.types import PreCheckoutQuery
+from aiogram.types import PreCheckoutQuery, BotCommand
 from handlers import setup_handlers
 from datetime import datetime, timedelta
 from functions import delete_client_by_email, update_client_expiry_by_email
@@ -141,6 +141,12 @@ async def main():
         # Регистрация обработчиков команд и кнопок
         setup_handlers(dp)
         logger.info("✅ Handlers registered")
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Перезапустить бота"),
+            BotCommand(command="menu", description="Открыть меню"),
+            BotCommand(command="paysupport", description="Оплата на карту через администратора"),
+            BotCommand(command="help", description="Помощь"),
+        ])
     except Exception as e:
         logger.error(f"❌ Handler registration error: {e}")
         return
