@@ -129,6 +129,6 @@ streamlit run admin_panel.py
 Подробности см. в файле [LICENSE](./LICENSE).
 
 Telegram бот: @grimhook_vpn_bot
-Связь с разработчиком: Telegram: @Blackdogz
+Связь с поддержкой: support@grimhook.org
 ---
 *Developed by [Banditzx](https://github.com/Banditzx)*

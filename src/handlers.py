@@ -173,8 +173,7 @@ async def menu_cmd(message: Message, bot: Bot):
 def build_help_text() -> str:
     return (
         "О боте:\n"
-        "<b>Разработчик:</b>\n"
-        "@Blackdogz\n"
+        "<b>Поддержка:</b> support@grimhook.org\n"
         "<b>Telegram бот:</b> @grimhook_vpn_bot"
     )
 
