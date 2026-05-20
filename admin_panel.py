@@ -100,24 +100,22 @@ def require_admin_auth():
         [data-testid="stSidebar"] {
             display: none;
         }
-        [data-testid="stAppViewContainer"] > .main {
+        .stApp {
             min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
         }
-        .block-container {
-            max-width: 480px !important;
-            padding-top: 0 !important;
-            padding-bottom: 0 !important;
+        .main .block-container {
+            max-width: 420px !important;
+            padding-top: 18vh !important;
+            padding-bottom: 8vh !important;
         }
         .login-panel {
             border: 1px solid rgba(255, 140, 60, 0.32);
             border-radius: 10px;
             background: linear-gradient(180deg, rgba(19, 25, 32, 0.96), rgba(11, 15, 20, 0.98));
             box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
-            padding: 30px 30px 22px;
+            padding: 32px 30px 24px;
             text-align: center;
+            margin: 0 auto;
         }
         .login-mark {
             width: 48px;
@@ -135,9 +133,10 @@ def require_admin_auth():
         .login-title {
             margin: 0;
             color: #f5f5f5;
-            font-size: 28px;
-            line-height: 1.2;
+            font-size: 30px;
+            line-height: 1.15;
             font-weight: 800;
+            letter-spacing: 0;
         }
         .login-copy {
             margin: 12px 0 0;
@@ -148,15 +147,50 @@ def require_admin_auth():
         .login-spacer {
             height: 18px;
         }
+        div[data-testid="stTextInput"], div[data-testid="stButton"] {
+            max-width: 420px;
+            margin-left: auto;
+            margin-right: auto;
+        }
         div[data-testid="stTextInput"] label {
             color: rgba(245, 245, 245, 0.78) !important;
             font-weight: 700;
         }
-        div[data-testid="stTextInput"] input {
+        div[data-testid="stTextInput"] [data-baseweb="input"] {
+            min-height: 42px !important;
             background: rgba(0, 0, 0, 0.28) !important;
             border: 1px solid rgba(255, 140, 60, 0.28) !important;
-            color: #f5f5f5 !important;
             border-radius: 8px !important;
+            overflow: hidden !important;
+        }
+        div[data-testid="stTextInput"] [data-baseweb="input"]:focus-within {
+            border-color: rgba(255, 140, 60, 0.62) !important;
+            box-shadow: 0 0 0 1px rgba(255, 140, 60, 0.18) !important;
+        }
+        div[data-testid="stTextInput"] input {
+            height: 42px !important;
+            background: transparent !important;
+            border: 0 !important;
+            color: #f5f5f5 !important;
+            padding-right: 8px !important;
+        }
+        div[data-testid="stTextInput"] [data-baseweb="input"] button {
+            width: 42px !important;
+            height: 42px !important;
+            min-width: 42px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            background: rgba(255, 255, 255, 0.06) !important;
+            border: 0 !important;
+            border-left: 1px solid rgba(255, 140, 60, 0.18) !important;
+            border-radius: 0 !important;
+        }
+        div[data-testid="stTextInput"] [data-baseweb="input"] button svg {
+            display: block !important;
+            margin: 0 !important;
         }
         div[data-testid="stButton"] button {
             border-radius: 8px !important;
