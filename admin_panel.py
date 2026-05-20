@@ -10,6 +10,9 @@ import sys
 import asyncio
 import json
 import html
+import secrets
+import hmac
+import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -33,19 +36,153 @@ Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(page_title="Grimhook VPN Admin Panel", layout="wide")
 
+ADMIN_SESSION_TTL_HOURS = 24 * 7
+
+def _get_query_param(name: str):
+    value = st.query_params.get(name)
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+def _sign_admin_session(expires_at: int, nonce: str) -> str:
+    payload = f"{expires_at}:{nonce}"
+    signature = hmac.new(
+        config.ADMIN_PANEL_PASSWORD.encode(),
+        payload.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}:{signature}"
+
+def _is_valid_admin_session(token: str | None) -> bool:
+    if not token or not config.ADMIN_PANEL_PASSWORD:
+        return False
+    try:
+        expires_raw, nonce, signature = token.split(":", 2)
+        expires_at = int(expires_raw)
+    except Exception:
+        return False
+
+    if datetime.utcnow().timestamp() > expires_at:
+        return False
+
+    expected = _sign_admin_session(expires_at, nonce)
+    return hmac.compare_digest(token, expected)
+
+def _create_admin_session_token() -> str:
+    expires_at = int((datetime.utcnow() + timedelta(hours=ADMIN_SESSION_TTL_HOURS)).timestamp())
+    return _sign_admin_session(expires_at, secrets.token_urlsafe(18))
+
+def logout_admin():
+    st.session_state.pop("admin_authenticated", None)
+    st.session_state.pop("admin_auth_until", None)
+    st.query_params.pop("admin_session", None)
+    st.rerun()
+
 def require_admin_auth():
     if not config.ADMIN_PANEL_PASSWORD:
         st.error("ADMIN_PANEL_PASSWORD не задан в src/.env. Админ-панель заблокирована для безопасности.")
         st.stop()
 
-    if st.session_state.get("admin_authenticated"):
+    auth_until = st.session_state.get("admin_auth_until")
+    if st.session_state.get("admin_authenticated") and auth_until and datetime.utcnow().timestamp() < auth_until:
         return
 
-    st.title("🔐 Вход в админ-панель")
-    password = st.text_input("Пароль администратора", type="password")
-    if st.button("Войти", use_container_width=True):
-        if password == config.ADMIN_PANEL_PASSWORD:
+    token = _get_query_param("admin_session")
+    if _is_valid_admin_session(token):
+        expires_raw = token.split(":", 1)[0]
+        st.session_state["admin_authenticated"] = True
+        st.session_state["admin_auth_until"] = int(expires_raw)
+        return
+
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] {
+            display: none;
+        }
+        [data-testid="stAppViewContainer"] > .main {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .block-container {
+            max-width: 480px !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+        }
+        .login-panel {
+            border: 1px solid rgba(255, 140, 60, 0.32);
+            border-radius: 10px;
+            background: linear-gradient(180deg, rgba(19, 25, 32, 0.96), rgba(11, 15, 20, 0.98));
+            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
+            padding: 30px 30px 22px;
+            text-align: center;
+        }
+        .login-mark {
+            width: 48px;
+            height: 48px;
+            border-radius: 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 16px;
+            color: #0b0f14;
+            background: linear-gradient(135deg, #ff8c3c, #ffb35c);
+            font-size: 25px;
+            font-weight: 900;
+        }
+        .login-title {
+            margin: 0;
+            color: #f5f5f5;
+            font-size: 28px;
+            line-height: 1.2;
+            font-weight: 800;
+        }
+        .login-copy {
+            margin: 12px 0 0;
+            color: rgba(245, 245, 245, 0.68);
+            font-size: 14px;
+            line-height: 1.55;
+        }
+        .login-spacer {
+            height: 18px;
+        }
+        div[data-testid="stTextInput"] label {
+            color: rgba(245, 245, 245, 0.78) !important;
+            font-weight: 700;
+        }
+        div[data-testid="stTextInput"] input {
+            background: rgba(0, 0, 0, 0.28) !important;
+            border: 1px solid rgba(255, 140, 60, 0.28) !important;
+            color: #f5f5f5 !important;
+            border-radius: 8px !important;
+        }
+        div[data-testid="stButton"] button {
+            border-radius: 8px !important;
+            border: 1px solid rgba(255, 140, 60, 0.45) !important;
+            background: linear-gradient(135deg, #ff8c3c, #ffb35c) !important;
+            color: #0b0f14 !important;
+            font-weight: 800 !important;
+        }
+        </style>
+        <div class="login-panel">
+            <div class="login-mark">G</div>
+            <h1 class="login-title">Grimhook VPN</h1>
+            <p class="login-copy">Войдите в панель управления. Сессия сохранится на 7 дней для этой вкладки.</p>
+        </div>
+        <div class="login-spacer"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    password = st.text_input("Пароль администратора", type="password", label_visibility="visible")
+    if st.button("Войти в админ-панель", use_container_width=True):
+        if hmac.compare_digest(password, config.ADMIN_PANEL_PASSWORD):
+            token = _create_admin_session_token()
+            st.query_params["admin_session"] = token
             st.session_state["admin_authenticated"] = True
+            st.session_state["admin_auth_until"] = int(token.split(":", 1)[0])
             st.rerun()
         else:
             st.error("Неверный пароль")
@@ -499,6 +636,9 @@ def get_bot_status():
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Grimhook VPN")
+    if st.button("🚪 Выйти", use_container_width=True):
+        logout_admin()
+
     menu = st.radio(
         "Навигация:",
         ["📊 Мониторинг", "💳 Транзакции", "💬 Сообщения", "👥 Пользователи", "📝 Редактор кода", "📋 Логи бота"]

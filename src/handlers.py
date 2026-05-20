@@ -13,7 +13,7 @@ from database import (
     StaticProfile, get_user, create_user, update_subscription_days, 
     get_all_users, create_static_profile, get_static_profiles, 
     User, Session, get_user_stats as db_user_stats,
-    create_payment_record, create_support_message, mark_user_profile_deleted
+    create_payment_record, create_support_message, mark_user_profile_deleted, activate_trial_subscription, has_payment_records
 )
 from functions import create_vless_profile, delete_client_by_email, generate_vless_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email, get_client_by_email, is_managed_client_email
 
@@ -139,7 +139,7 @@ async def start_cmd(message: Message, bot: Bot):
         trial_suffix = "день" if config.TRIAL_DAYS == 1 else "дня" if config.TRIAL_DAYS in (2, 3, 4) else "дней"
         await message.answer(
             f"Добро пожаловать в VPN бота `{(await bot.get_me()).full_name}`!\n"
-            f"Вам предоставлен **бесплатный** тестовый период на **{config.TRIAL_DAYS} {trial_suffix}**!",
+            f"Бесплатный тестовый период на **{config.TRIAL_DAYS} {trial_suffix}** начнется, когда вы впервые нажмете **Подключиться**.",
             parse_mode='Markdown'
         )
         await asyncio.sleep(2)
@@ -733,12 +733,27 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
         await callback.answer("🛑 Ошибка профиля")
         return
     
+    profile_data = safe_json_loads(user.vless_profile_data, default={})
+    now = datetime.utcnow()
+
+    has_payments = await has_payment_records(user.telegram_id)
+
+    if not profile_data and not has_payments and (not user.subscription_end or user.subscription_end <= now):
+        trial_end = await activate_trial_subscription(user.telegram_id)
+        if not trial_end:
+            await callback.answer("🛑 Не удалось активировать пробный период", show_alert=True)
+            return
+        user = await get_user(user.telegram_id)
+        await callback.message.answer(
+            f"✅ Пробный период активирован до `{trial_end.strftime('%d.%m.%Y %H:%M')}`. Сейчас создам VPN профиль.",
+            parse_mode="Markdown"
+        )
+
     if not user.subscription_end or user.subscription_end <= datetime.utcnow():
         await callback.answer("⚠️ Подписка истекла! Продлите подписку.", show_alert=True)
         await show_menu(bot, callback.from_user.id, callback.message.message_id)
         return
-    
-    profile_data = safe_json_loads(user.vless_profile_data, default={})
+
     needs_new_profile = not profile_data or profile_data.get("xui_deleted")
 
     if profile_data and not profile_data.get("xui_deleted"):

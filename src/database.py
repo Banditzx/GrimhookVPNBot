@@ -62,6 +62,19 @@ Session = sessionmaker(bind=engine)
 
 async def init_db():
     Base.metadata.create_all(engine)
+    with Session() as session:
+        users = session.query(User).filter(User.subscription_end != None).all()
+        reset_count = 0
+        for user in users:
+            has_profile = bool(user.vless_profile_data)
+            has_payments = session.query(func.count(PaymentRecord.id)).filter_by(telegram_id=user.telegram_id).scalar() > 0
+            if not has_profile and not has_payments:
+                user.subscription_end = None
+                user.notified = False
+                reset_count += 1
+        if reset_count:
+            session.commit()
+            logger.info(f"✅ Reset unused trial dates for {reset_count} users")
     logger.info("✅ Database tables created")
 
 async def get_user(telegram_id: int):
@@ -74,7 +87,7 @@ async def create_user(telegram_id: int, full_name: str, username: str = None, is
             telegram_id=telegram_id,
             full_name=full_name,
             username=username,
-            subscription_end=datetime.utcnow() + timedelta(days=config.TRIAL_DAYS),
+            subscription_end=None,
             is_admin=is_admin
         )
         session.add(user)
@@ -118,11 +131,11 @@ async def update_subscription_days(telegram_id: int, days: int):
         user = session.query(User).filter_by(telegram_id=telegram_id).first()
         if user:
             now = datetime.utcnow()
-            # Если подписка активна, добавляем к текущей дате окончания
-            if user.subscription_end > now:
+            # Если подписка активна, добавляем к текущей дате окончания.
+            # Если даты еще нет или срок истек, начинаем от текущего момента.
+            if user.subscription_end and user.subscription_end > now:
                 user.subscription_end += timedelta(days=days)
             else:
-                # Если подписка истекла, начинаем с текущей даты
                 user.subscription_end = now + timedelta(days=days)
             
             # Сбрасываем флаг уведомления
@@ -131,6 +144,19 @@ async def update_subscription_days(telegram_id: int, days: int):
             logger.info(f"✅ Subscription updated for {telegram_id}: +{days} days")
             return True
         return False
+
+async def activate_trial_subscription(telegram_id: int):
+    """Starts the free trial from the first real connection attempt."""
+    with Session() as session:
+        user = session.query(User).filter_by(telegram_id=telegram_id).first()
+        if not user:
+            return None
+
+        user.subscription_end = datetime.utcnow() + timedelta(days=config.TRIAL_DAYS)
+        user.notified = False
+        session.commit()
+        logger.info(f"✅ Trial subscription activated for {telegram_id}: {config.TRIAL_DAYS} days")
+        return user.subscription_end
 
 async def update_subscription(telegram_id: int, months: int):
     return await update_subscription_days(telegram_id, months * 30)
@@ -142,7 +168,7 @@ async def get_all_users(with_subscription: bool = None):
             if with_subscription:
                 query = query.filter(User.subscription_end > datetime.utcnow())
             else:
-                query = query.filter(User.subscription_end <= datetime.utcnow())
+                query = query.filter((User.subscription_end == None) | (User.subscription_end <= datetime.utcnow()))
         return query.all()
 
 async def create_static_profile(name: str, vless_url: str):
@@ -163,6 +189,10 @@ async def get_user_stats():
         with_sub = session.query(func.count(User.id)).filter(User.subscription_end > datetime.utcnow()).scalar()
         without_sub = total - with_sub
         return total, with_sub, without_sub
+
+async def has_payment_records(telegram_id: int) -> bool:
+    with Session() as session:
+        return session.query(func.count(PaymentRecord.id)).filter_by(telegram_id=telegram_id).scalar() > 0
 
 async def create_payment_record(
     telegram_id: int,
