@@ -13,9 +13,9 @@ from database import (
     StaticProfile, get_user, create_user, update_subscription_days, 
     get_all_users, create_static_profile, get_static_profiles, 
     User, Session, get_user_stats as db_user_stats,
-    create_payment_record, create_support_message
+    create_payment_record, create_support_message, mark_user_profile_deleted
 )
-from functions import create_vless_profile, delete_client_by_email, generate_vless_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email
+from functions import create_vless_profile, delete_client_by_email, generate_vless_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email, get_client_by_email, is_managed_client_email
 
 logger = logging.getLogger(__name__)
 
@@ -56,40 +56,51 @@ def split_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list:
 async def sync_vpn_expiry(vless_profile_data: str, subscription_end: datetime) -> bool:
     profile_data = safe_json_loads(vless_profile_data, default={})
     email = profile_data.get("email")
-    if not email:
+    if not is_managed_client_email(email):
+        logger.warning(f"Skip unmanaged 3x-ui profile sync: {email}")
         return True
     return await update_client_expiry_by_email(email, subscription_end)
+
+async def save_user_profile_data(telegram_id: int, profile_data: dict) -> User | None:
+    with Session() as session:
+        db_user = session.query(User).filter_by(telegram_id=telegram_id).first()
+        if db_user:
+            db_user.vless_profile_data = json.dumps(profile_data, ensure_ascii=False)
+            session.commit()
+    return await get_user(telegram_id)
 
 async def show_menu(bot: Bot, chat_id: int, message_id: int = None):
     """Функция для отображения меню (может как редактировать существующее сообщение, так и отправлять новое)"""
     user = await get_user(chat_id)
     if not user:
         return
-    
-    status = "Активна" if user.subscription_end > datetime.utcnow() else "Истекла"
-    expire_date = user.subscription_end.strftime("%d-%m-%Y %H:%M") if status == "Активна" else status
-    
+
+    is_active = bool(user.subscription_end and user.subscription_end > datetime.utcnow())
+    status = "активна" if is_active else "не активна"
+    expire_date = user.subscription_end.strftime("%d.%m.%Y %H:%M") if user.subscription_end else "нет данных"
+
     text = (
-        f"**Имя профиля**: `{user.full_name}`\n"
-        f"**Id**: `{user.telegram_id}`\n"
-        f"**Подписка**: `{status}`\n"
-        f"**Дата окончания подписки**: `{expire_date}`"
+        "👋 **Grimhook VPN**\n\n"
+        f"Подписка сейчас **{status}**.\n"
+        f"Дата окончания: `{expire_date}`\n\n"
+        "Для подключения используйте кнопку ниже. Если подписка закончится и вы оплатите снова, "
+        "бот выдаст новую рабочую ссылку для подключения."
     )
-    
+
     builder = InlineKeyboardBuilder()
-    builder.button(text="⭐ Продлить" if status=="Активна" else "⭐ Оплатить", callback_data="renew_sub")
-    builder.button(text="✅ Подключить", callback_data="connect")
-    builder.button(text="📊 Статистика", callback_data="stats")
+    builder.button(text="⭐ Продлить" if is_active else "⭐ Купить подписку", callback_data="renew_sub")
+    builder.button(text="🔌 Подключиться", callback_data="connect")
+    builder.button(text="📋 Статус", callback_data="status")
+    builder.button(text="📊 Трафик", callback_data="stats")
     builder.button(text="💬 Написать админу", callback_data="support_message")
     builder.button(text="ℹ️ Помощь", callback_data="help")
-    
+
     if user.is_admin:
         builder.button(text="⚠️ Админ. меню", callback_data="admin_menu")
-    
-    builder.adjust(2, 2, 1, 1)
-    
+
+    builder.adjust(2, 2, 2, 1)
+
     if message_id:
-        # Редактируем существующее сообщение
         await bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -98,7 +109,6 @@ async def show_menu(bot: Bot, chat_id: int, message_id: int = None):
             parse_mode='Markdown'
         )
     else:
-        # Отправляем новое сообщение
         await bot.send_message(
             chat_id=chat_id,
             text=text,
@@ -343,10 +353,25 @@ async def process_successful_payment(message: Message, bot: Bot):
                 )
                 updated_user = await get_user(message.from_user.id)
                 vpn_sync_ok = True
+                vpn_sync_text = ""
                 if updated_user and updated_user.vless_profile_data:
-                    vpn_sync_ok = await sync_vpn_expiry(updated_user.vless_profile_data, updated_user.subscription_end)
+                    profile_data = safe_json_loads(updated_user.vless_profile_data, default={})
+                    email = profile_data.get("email")
+                    if profile_data.get("xui_deleted"):
+                        vpn_sync_text = "\n\nℹ️ Рабочий VPN профиль будет создан при следующем нажатии «Подключить» на оплаченный срок."
+                    else:
+                        client = await get_client_by_email(email) if email else False
+                        if client is False:
+                            await mark_user_profile_deleted(updated_user.telegram_id)
+                            vpn_sync_text = "\n\nℹ️ Старый VPN профиль отсутствует в панели. При следующем подключении бот создаст новый профиль на оплаченный срок."
+                        elif client is None:
+                            vpn_sync_ok = False
+                            vpn_sync_text = "\n\n⚠️ Подписка в боте продлена, но 3x-ui временно недоступна для проверки профиля. Попробуйте подключиться позже."
+                        else:
+                            vpn_sync_ok = await sync_vpn_expiry(updated_user.vless_profile_data, updated_user.subscription_end)
+                            if not vpn_sync_ok:
+                                vpn_sync_text = "\n\n⚠️ Подписка в боте продлена, но срок VPN профиля не обновился. Напишите администратору."
 
-                vpn_sync_text = "" if vpn_sync_ok else "\n\n⚠️ Подписка в боте продлена, но срок VPN профиля не обновился. Напишите администратору."
                 await message.answer(
                     f"✅ Оплата прошла успешно! Ваша подписка {action_type} на {plan['label']}.\n\n"
                     f"Спасибо за покупку! 🎉{vpn_sync_text}"
@@ -702,35 +727,43 @@ async def handle_delete_static_profile(callback: CallbackQuery):
         await callback.answer("⚠️ Ошибка при удалении профиля")
 
 @router.callback_query(F.data == "connect")
-async def connect_profile(callback: CallbackQuery):
+async def connect_profile(callback: CallbackQuery, bot: Bot):
     user = await get_user(callback.from_user.id)
     if not user:
         await callback.answer("🛑 Ошибка профиля")
         return
     
-    if user.subscription_end < datetime.utcnow():
-        await callback.answer("⚠️ Подписка истекла! Продлите подписку.")
+    if not user.subscription_end or user.subscription_end <= datetime.utcnow():
+        await callback.answer("⚠️ Подписка истекла! Продлите подписку.", show_alert=True)
+        await show_menu(bot, callback.from_user.id, callback.message.message_id)
         return
     
-    if not user.vless_profile_data:
-        await callback.message.edit_text("⚙️ Создаем ваш VPN профиль...")
+    profile_data = safe_json_loads(user.vless_profile_data, default={})
+    needs_new_profile = not profile_data or profile_data.get("xui_deleted")
+
+    if profile_data and not profile_data.get("xui_deleted"):
+        email = profile_data.get("email")
+        client = await get_client_by_email(email) if email else False
+        if client is None:
+            await callback.message.answer("⚠️ Не удалось проверить профиль в 3x-ui. Попробуйте позже.")
+            return
+        needs_new_profile = client is False
+        if needs_new_profile:
+            await mark_user_profile_deleted(user.telegram_id)
+
+    if needs_new_profile:
+        await callback.message.edit_text("⚙️ Создаем рабочий VPN профиль на ваш оплаченный срок...")
         profile_data = await create_vless_profile(user.telegram_id, user.subscription_end)
-        
         if profile_data:
-            with Session() as session:
-                db_user = session.query(User).filter_by(telegram_id=user.telegram_id).first()
-                if db_user:
-                    db_user.vless_profile_data = json.dumps(profile_data)
-                    session.commit()
-            user = await get_user(user.telegram_id)
+            user = await save_user_profile_data(user.telegram_id, profile_data)
         else:
             await callback.message.answer("🛑 Ошибка при создании профиля. Попробуйте позже.")
             return
-    
-    profile_data = safe_json_loads(user.vless_profile_data, default={})
+
     if not profile_data:
-        await callback.message.answer("⚠️ У вас пока нет созданного профиля.")
+        await callback.message.answer("⚠️ У вас пока нет созданного профиля. Попробуйте позже.")
         return
+
     vless_url = generate_vless_url(profile_data)
     text = (
         "🎉 **Ваш VPN профиль готов!**\n\n"
@@ -800,6 +833,51 @@ async def network_stats(callback: CallbackQuery):
         f"🔼 Upload - `{upload} {upload_size}` | 🔽 Download - `{download} {download_size}`"
     )
     await callback.message.edit_text(text, parse_mode='Markdown')
+
+@router.callback_query(F.data == "status")
+async def subscription_status(callback: CallbackQuery):
+    user = await get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("🛑 Пользователь не найден")
+        return
+
+    now = datetime.utcnow()
+    is_active = bool(user.subscription_end and user.subscription_end > now)
+    registration_date = user.registration_date.strftime("%d.%m.%Y %H:%M") if user.registration_date else "нет данных"
+    expire_date = user.subscription_end.strftime("%d.%m.%Y %H:%M") if user.subscription_end else "нет данных"
+    days_left = (user.subscription_end - now).days if is_active else 0
+
+    profile_data = safe_json_loads(user.vless_profile_data, default={})
+    if profile_data.get("xui_deleted"):
+        profile_status = "профиль будет создан после оплаты/подключения"
+    elif profile_data:
+        profile_status = "профиль создан"
+    else:
+        profile_status = "профиль еще не создавался"
+
+    status_text = "Активна" if is_active else "Не активна"
+    renewal_note = (
+        "Если подписка закончится, старый профиль будет отключен. "
+        "После новой оплаты нажмите «Подключиться» и используйте новую ссылку в приложении."
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⭐ Продлить" if is_active else "⭐ Купить подписку", callback_data="renew_sub")
+    builder.button(text="🔌 Подключиться", callback_data="connect")
+    builder.button(text="⬅️ Назад", callback_data="back_to_menu")
+    builder.adjust(2, 1)
+
+    text = (
+        "📋 **Статус аккаунта**\n\n"
+        f"**Подписка:** `{status_text}`\n"
+        f"**Дата окончания:** `{expire_date}`\n"
+        f"**Осталось дней:** `{days_left}`\n"
+        f"**Дата регистрации:** `{registration_date}`\n"
+        f"**Telegram ID:** `{user.telegram_id}`\n"
+        f"**VPN профиль:** `{profile_status}`\n\n"
+        f"ℹ️ {renewal_note}"
+    )
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
 
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery, bot: Bot, state: FSMContext):

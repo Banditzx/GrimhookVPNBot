@@ -40,6 +40,7 @@ class Config(BaseModel):
     XUI_SERVER_NAME: str = os.getenv("XUI_SERVER_NAME", "VPN_SERVER")
     INBOUND_ID: int = int(os.getenv("INBOUND_ID", "1"))
     TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS", "1"))
+    XUI_MANAGED_CLIENT_PREFIX: str = os.getenv("XUI_MANAGED_CLIENT_PREFIX", "user_")
 
     REALITY_PUBLIC_KEY: str = os.getenv("REALITY_PUBLIC_KEY", "")
     REALITY_FINGERPRINT: str = os.getenv("REALITY_FINGERPRINT", "chrome")

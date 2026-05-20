@@ -2,6 +2,8 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime, timedelta
 from pathlib import Path
+import os
+import json
 import logging
 from config import config
 
@@ -9,7 +11,10 @@ logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = BASE_DIR / "users.db"
+DB_PATH = Path(os.getenv("BOT_DATABASE_PATH", BASE_DIR / "users.db"))
+if not DB_PATH.is_absolute():
+    DB_PATH = BASE_DIR / DB_PATH
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 class User(Base):
     __tablename__ = 'users'
@@ -85,6 +90,27 @@ async def delete_user_profile(telegram_id: int):
             user.notified = False
             session.commit()
             logger.info(f"✅ User profile deleted: {telegram_id}")
+
+async def mark_user_profile_deleted(telegram_id: int):
+    with Session() as session:
+        user = session.query(User).filter_by(telegram_id=telegram_id).first()
+        if not user:
+            return False
+
+        profile_data = {}
+        if user.vless_profile_data:
+            try:
+                profile_data = json.loads(user.vless_profile_data)
+            except Exception:
+                profile_data = {"raw_profile_data": user.vless_profile_data}
+
+        profile_data["xui_deleted"] = True
+        profile_data["xui_deleted_at"] = datetime.utcnow().isoformat(sep=" ")
+        user.vless_profile_data = json.dumps(profile_data, ensure_ascii=False)
+        user.notified = False
+        session.commit()
+        logger.info(f"✅ User VPN profile marked as deleted in 3x-ui: {telegram_id}")
+        return True
 
 async def update_subscription_days(telegram_id: int, days: int):
     """Обновляет подписку с учетом текущего состояния"""

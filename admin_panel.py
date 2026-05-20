@@ -10,6 +10,7 @@ import sys
 import asyncio
 import json
 import html
+from pathlib import Path
 from datetime import datetime, timedelta
 
 import requests
@@ -19,14 +20,16 @@ import requests
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(BASE_DIR, "src")
-DB_PATH = os.path.join(BASE_DIR, "users.db")
 LOG_PATH = os.path.join(BASE_DIR, "bot_error.log")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from database import Base, engine
-from functions import delete_client_by_email
 from config import config
+from database import Base, engine, DB_PATH as BOT_DB_PATH
+from functions import delete_client_by_email, is_managed_client_email
+
+DB_PATH = str(BOT_DB_PATH)
+Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(page_title="Grimhook VPN Admin Panel", layout="wide")
 
@@ -475,6 +478,8 @@ def delete_vpn_profile(vless_profile_data):
     email = profile.get("email")
     if not email:
         return "Email VPN профиля не найден, удален только пользователь"
+    if not is_managed_client_email(email):
+        return f"VPN профиль {email} не тронут: бот работает только с префиксом {config.XUI_MANAGED_CLIENT_PREFIX}"
 
     deleted = asyncio.run(delete_client_by_email(email))
     if deleted:

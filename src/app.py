@@ -8,8 +8,8 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import PreCheckoutQuery, BotCommand
 from handlers import setup_handlers
 from datetime import datetime, timedelta
-from functions import delete_client_by_email, update_client_expiry_by_email
-from database import Session, User, init_db, get_all_users, delete_user_profile
+from functions import delete_client_by_email, update_client_expiry_by_email, get_client_by_email, is_managed_client_email
+from database import Session, User, init_db, get_all_users, mark_user_profile_deleted
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -45,25 +45,31 @@ async def check_subscriptions(bot: Bot):
                         except Exception as e:
                             logger.error(f"Не удалось отправить уведомление пользователю {user.telegram_id}: {e}")
 
-                    # Отключение при истечении срока
+                    # Отключение при истечении срока: удаляем только из 3x-ui, историю в базе бота сохраняем.
                     if time_diff <= timedelta(seconds=0):
                         try:
                             if user.vless_profile_data:
                                 profile = json.loads(user.vless_profile_data)
+                                if profile.get("xui_deleted"):
+                                    continue
+
                                 email = profile.get("email")
-                                if email:
-                                    # Удаляем клиента из 3X-UI через API
-                                    if await delete_client_by_email(email):
-                                        # Очищаем данные профиля в БД бота
-                                        await delete_user_profile(user.telegram_id)
+                                if is_managed_client_email(email):
+                                    client = await get_client_by_email(email)
+                                    if client is None:
+                                        continue
+
+                                    if client is False or await delete_client_by_email(email):
+                                        await mark_user_profile_deleted(user.telegram_id)
                                         await bot.send_message(
-                                            user.telegram_id, 
-                                            "❌ Ваша подписка истекла. Доступ к VPN отключен."
+                                            user.telegram_id,
+                                            "❌ Ваша подписка истекла. Доступ к VPN отключен. Продлите подписку, чтобы получить новый рабочий профиль."
                                         )
-                                        logger.info(f"Подписка пользователя {user.telegram_id} истекла, профиль удален.")
+                                        logger.info(f"Подписка пользователя {user.telegram_id} истекла, профиль удален из 3x-ui, история сохранена.")
                         except Exception as e:
                             logger.error(f"Ошибка при удалении профиля {user.telegram_id}: {e}")
                             
+            await sync_vpn_expiries()
         except Exception as e:
             logger.error(f"Ошибка в цикле проверки подписок: {e}")
             
@@ -80,13 +86,16 @@ async def update_admins_status():
             user = session.query(User).filter_by(telegram_id=admin_id).first()
             if user:
                 user.is_admin = True
+                if user.subscription_end and user.subscription_end > datetime.utcnow() + timedelta(days=300):
+                    user.subscription_end = datetime.utcnow()
+                    user.notified = False
             else:
                 # Если админа нет в БД, создаем запись
                 new_admin = User(
                     telegram_id=admin_id,
                     full_name="Admin",
                     is_admin=True,
-                    subscription_end=datetime.utcnow() + timedelta(days=365)
+                    subscription_end=datetime.utcnow()
                 )
                 session.add(new_admin)
         
@@ -105,8 +114,22 @@ async def sync_vpn_expiries():
 
         try:
             profile = json.loads(user.vless_profile_data)
+            if profile.get("xui_deleted") or user.subscription_end <= datetime.utcnow():
+                continue
+
             email = profile.get("email")
-            if not email:
+            if not is_managed_client_email(email):
+                logger.warning(f"Skip unmanaged 3x-ui profile sync: {email}")
+                continue
+
+            client = await get_client_by_email(email)
+            if client is False:
+                await mark_user_profile_deleted(user.telegram_id)
+                failed += 1
+                logger.info(f"VPN profile {email} missing in 3x-ui, profile marked deleted for {user.telegram_id}")
+                continue
+            if client is None:
+                failed += 1
                 continue
 
             if await update_client_expiry_by_email(email, user.subscription_end):

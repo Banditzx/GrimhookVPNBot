@@ -25,6 +25,7 @@ src/.env.*
 *.sqlite3
 users.db
 src/users.db
+data/
 
 # Logs and process output
 *.log

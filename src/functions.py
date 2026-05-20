@@ -14,6 +14,10 @@ from config import config
 logger = logging.getLogger(__name__)
 
 
+def is_managed_client_email(email: str | None) -> bool:
+    return bool(email and email.startswith(config.XUI_MANAGED_CLIENT_PREFIX))
+
+
 class XUIAPI:
     def __init__(self):
         self.session = None
@@ -102,6 +106,29 @@ class XUIAPI:
             "total": inbound.get("total", 0),
         }
 
+    async def get_client_by_email(self, email: str):
+        if not is_managed_client_email(email):
+            logger.warning(f"Ignored unmanaged 3x-ui client lookup: {email}")
+            return False
+
+        if not await self.login():
+            return None
+
+        inbound = await self.get_inbound(config.INBOUND_ID)
+        if not inbound:
+            return None
+
+        try:
+            settings = json.loads(inbound["settings"])
+            clients = settings.get("clients", [])
+            for client in clients:
+                if client.get("email") == email:
+                    return client
+            return False
+        except Exception as e:
+            logger.exception(f"🛑 Get client by email error: {e}")
+            return None
+
     def _build_update_data(self, inbound: dict, settings: dict) -> dict:
         return {
             "up": inbound["up"],
@@ -169,6 +196,10 @@ class XUIAPI:
         return int(value.timestamp() * 1000)
 
     async def create_vless_profile(self, telegram_id: int, subscription_end: datetime | None = None):
+        if not subscription_end or subscription_end <= datetime.utcnow():
+            logger.warning(f"Refused to create VPN profile for {telegram_id}: subscription is expired")
+            return None
+
         if not await self.login():
             return None
 
@@ -184,11 +215,7 @@ class XUIAPI:
             protocol = inbound.get("protocol", "vless")
             stream_settings = self._get_stream_settings(inbound)
             email = f"user_{telegram_id}_{random.randint(1000, 9999)}"
-            expire_at = (
-                self._datetime_to_ms(subscription_end)
-                if subscription_end
-                else int((time.time() + (config.TRIAL_DAYS * 24 * 60 * 60)) * 1000)
-            )
+            expire_at = self._datetime_to_ms(subscription_end)
             new_client = self._build_client(protocol, email, expire_at, str(telegram_id))
 
             clients.append(new_client)
@@ -224,7 +251,7 @@ class XUIAPI:
 
             protocol = inbound.get("protocol", "vless")
             stream_settings = self._get_stream_settings(inbound)
-            email = f"static_{profile_name}_{random.randint(100, 999)}"
+            email = f"{config.XUI_MANAGED_CLIENT_PREFIX}static_{profile_name}_{random.randint(100, 999)}"
             new_client = self._build_client(protocol, email, 0)
 
             clients.append(new_client)
@@ -247,6 +274,10 @@ class XUIAPI:
             return None
 
     async def update_client_expiry(self, email: str, subscription_end: datetime):
+        if not is_managed_client_email(email):
+            logger.warning(f"Refused to update unmanaged 3x-ui client: {email}")
+            return False
+
         if not await self.login():
             return False
 
@@ -274,6 +305,10 @@ class XUIAPI:
             return False
 
     async def delete_client(self, email: str):
+        if not is_managed_client_email(email):
+            logger.warning(f"Refused to delete unmanaged 3x-ui client: {email}")
+            return False
+
         if not await self.login():
             return False
 
@@ -296,6 +331,10 @@ class XUIAPI:
             return False
 
     async def get_user_stats(self, email: str):
+        if not is_managed_client_email(email):
+            logger.warning(f"Ignored unmanaged 3x-ui traffic stats lookup: {email}")
+            return {"upload": 0, "download": 0}
+
         if not await self.login():
             return {"upload": 0, "download": 0}
         res = await self._request("GET", f"/getClientTraffics/{email}")
@@ -308,7 +347,7 @@ class XUIAPI:
             return 0
         res = await self._request("POST", "/onlines")
         if res and isinstance(res, list):
-            return len([user for user in res if "user_" in str(user)])
+            return len([user for user in res if config.XUI_MANAGED_CLIENT_PREFIX in str(user)])
         return 0
 
     async def close(self):
@@ -344,6 +383,14 @@ async def update_client_expiry_by_email(email: str, subscription_end: datetime):
     api = XUIAPI()
     try:
         return await api.update_client_expiry(email, subscription_end)
+    finally:
+        await api.close()
+
+
+async def get_client_by_email(email: str):
+    api = XUIAPI()
+    try:
+        return await api.get_client_by_email(email)
     finally:
         await api.close()
 

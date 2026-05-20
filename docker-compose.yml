@@ -1,0 +1,16 @@
+services:
+  grimhook-vpn-bot:
+    build: .
+    container_name: grimhook-vpn-bot
+    restart: unless-stopped
+    env_file:
+      - ./src/.env
+    environment:
+      BOT_DATABASE_PATH: /app/data/users.db
+    ports:
+      - "8501:8501"
+    volumes:
+      - grimhook_vpn_data:/app/data
+
+volumes:
+  grimhook_vpn_data:
