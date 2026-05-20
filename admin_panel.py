@@ -97,115 +97,135 @@ def require_admin_auth():
     st.markdown(
         """
         <style>
-        [data-testid="stSidebar"] {
+        [data-testid="stSidebar"], [data-testid="stHeader"] {
             display: none;
         }
         .stApp {
             min-height: 100vh;
+            background: #0f1318 !important;
+        }
+        [data-testid="stAppViewContainer"] > .main {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
         }
         .main .block-container {
-            max-width: 420px !important;
-            padding-top: 18vh !important;
-            padding-bottom: 8vh !important;
+            max-width: 380px !important;
+            margin: 0 auto !important;
+            padding: 28px !important;
+            border: 1px solid rgba(255, 140, 60, 0.22);
+            border-radius: 8px;
+            background: #151a20;
+            box-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
+            box-sizing: border-box;
         }
         .login-panel {
-            border: 1px solid rgba(255, 140, 60, 0.32);
-            border-radius: 10px;
-            background: linear-gradient(180deg, rgba(19, 25, 32, 0.96), rgba(11, 15, 20, 0.98));
-            box-shadow: 0 24px 80px rgba(0, 0, 0, 0.38);
-            padding: 32px 30px 24px;
-            text-align: center;
-            margin: 0 auto;
+            width: 100%;
+        }
+        .login-logo {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 22px;
         }
         .login-mark {
-            width: 48px;
-            height: 48px;
+            width: 52px;
+            height: 52px;
             border-radius: 8px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            margin-bottom: 16px;
-            color: #0b0f14;
-            background: linear-gradient(135deg, #ff8c3c, #ffb35c);
-            font-size: 25px;
+            color: #0f1318;
+            background: #ff9d4d;
+            font-size: 24px;
             font-weight: 900;
+            line-height: 1;
         }
         .login-title {
-            margin: 0;
+            margin: 0 0 22px;
+            text-align: center;
             color: #f5f5f5;
-            font-size: 30px;
-            line-height: 1.15;
+            font-size: 22px;
+            line-height: 1.2;
             font-weight: 800;
             letter-spacing: 0;
         }
-        .login-copy {
-            margin: 12px 0 0;
-            color: rgba(245, 245, 245, 0.68);
-            font-size: 14px;
-            line-height: 1.55;
-        }
-        .login-spacer {
-            height: 18px;
-        }
         div[data-testid="stTextInput"], div[data-testid="stButton"] {
-            max-width: 420px;
-            margin-left: auto;
-            margin-right: auto;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
         }
         div[data-testid="stTextInput"] label {
             color: rgba(245, 245, 245, 0.78) !important;
-            font-weight: 700;
+            font-weight: 600 !important;
+            font-size: 13px !important;
         }
         div[data-testid="stTextInput"] [data-baseweb="input"] {
-            min-height: 42px !important;
-            background: rgba(0, 0, 0, 0.28) !important;
-            border: 1px solid rgba(255, 140, 60, 0.28) !important;
+            height: 44px !important;
+            min-height: 44px !important;
+            background: #0f1318 !important;
+            border: 1px solid rgba(255, 140, 60, 0.26) !important;
             border-radius: 8px !important;
             overflow: hidden !important;
         }
         div[data-testid="stTextInput"] [data-baseweb="input"]:focus-within {
-            border-color: rgba(255, 140, 60, 0.62) !important;
-            box-shadow: 0 0 0 1px rgba(255, 140, 60, 0.18) !important;
+            border-color: rgba(255, 157, 77, 0.72) !important;
+            box-shadow: 0 0 0 1px rgba(255, 157, 77, 0.14) !important;
+        }
+        div[data-testid="stTextInput"] [data-baseweb="base-input"] {
+            height: 44px !important;
+            padding-right: 0 !important;
         }
         div[data-testid="stTextInput"] input {
-            height: 42px !important;
+            height: 44px !important;
             background: transparent !important;
             border: 0 !important;
             color: #f5f5f5 !important;
-            padding-right: 8px !important;
+            padding: 0 12px !important;
         }
-        div[data-testid="stTextInput"] [data-baseweb="input"] button {
-            width: 42px !important;
-            height: 42px !important;
-            min-width: 42px !important;
+        div[data-testid="stTextInput"] [data-baseweb="input"] > div:last-child {
+            width: 44px !important;
+            min-width: 44px !important;
+            height: 44px !important;
             margin: 0 !important;
             padding: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            background: rgba(255, 255, 255, 0.05) !important;
+            border-left: 1px solid rgba(255, 140, 60, 0.18) !important;
+        }
+        div[data-testid="stTextInput"] [data-baseweb="input"] button {
+            width: 44px !important;
+            height: 44px !important;
+            min-width: 44px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: transparent !important;
+            border: 0 !important;
+            border-radius: 0 !important;
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
-            background: rgba(255, 255, 255, 0.06) !important;
-            border: 0 !important;
-            border-left: 1px solid rgba(255, 140, 60, 0.18) !important;
-            border-radius: 0 !important;
         }
         div[data-testid="stTextInput"] [data-baseweb="input"] button svg {
             display: block !important;
             margin: 0 !important;
         }
         div[data-testid="stButton"] button {
+            height: 44px !important;
             border-radius: 8px !important;
-            border: 1px solid rgba(255, 140, 60, 0.45) !important;
-            background: linear-gradient(135deg, #ff8c3c, #ffb35c) !important;
-            color: #0b0f14 !important;
+            border: 1px solid rgba(255, 157, 77, 0.4) !important;
+            background: #ff9d4d !important;
+            color: #0f1318 !important;
             font-weight: 800 !important;
+            margin-top: 4px !important;
         }
         </style>
         <div class="login-panel">
-            <div class="login-mark">G</div>
+            <div class="login-logo"><div class="login-mark">G</div></div>
             <h1 class="login-title">Grimhook VPN</h1>
-            <p class="login-copy">Войдите в панель управления. Сессия сохранится на 7 дней для этой вкладки.</p>
         </div>
-        <div class="login-spacer"></div>
         """,
         unsafe_allow_html=True,
     )
