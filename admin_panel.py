@@ -161,56 +161,17 @@ def require_admin_auth():
             font-size: 13px !important;
         }
         div[data-testid="stTextInput"] [data-baseweb="input"] {
-            height: 44px !important;
             min-height: 44px !important;
             background: #0f1318 !important;
             border: 1px solid rgba(255, 140, 60, 0.26) !important;
             border-radius: 8px !important;
-            overflow: hidden !important;
         }
         div[data-testid="stTextInput"] [data-baseweb="input"]:focus-within {
             border-color: rgba(255, 157, 77, 0.72) !important;
             box-shadow: 0 0 0 1px rgba(255, 157, 77, 0.14) !important;
         }
-        div[data-testid="stTextInput"] [data-baseweb="base-input"] {
-            height: 44px !important;
-            padding-right: 0 !important;
-        }
         div[data-testid="stTextInput"] input {
-            height: 44px !important;
-            background: transparent !important;
-            border: 0 !important;
             color: #f5f5f5 !important;
-            padding: 0 12px !important;
-        }
-        div[data-testid="stTextInput"] [data-baseweb="input"] > div:last-child {
-            width: 44px !important;
-            min-width: 44px !important;
-            height: 44px !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            display: flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-            background: rgba(255, 255, 255, 0.05) !important;
-            border-left: 1px solid rgba(255, 140, 60, 0.18) !important;
-        }
-        div[data-testid="stTextInput"] [data-baseweb="input"] button {
-            width: 44px !important;
-            height: 44px !important;
-            min-width: 44px !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            background: transparent !important;
-            border: 0 !important;
-            border-radius: 0 !important;
-            display: inline-flex !important;
-            align-items: center !important;
-            justify-content: center !important;
-        }
-        div[data-testid="stTextInput"] [data-baseweb="input"] button svg {
-            display: block !important;
-            margin: 0 !important;
         }
         div[data-testid="stButton"] button {
             height: 44px !important;
