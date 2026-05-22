@@ -336,12 +336,23 @@ async def process_successful_payment(message: Message, bot: Bot):
                 await message.answer("❌ Ошибка: пользователь не найден")
                 return
             
-            # Определяем тип действия (покупка или продление)
+            # Определяем тип действия (покупка или продление).
+            # У новых пользователей subscription_end может быть пустым до первого подключения.
             now = datetime.utcnow()
-            action_type = "продлена" if user.subscription_end > now else "куплена"
-            
+            old_subscription_end = user.subscription_end
+            action_type = "продлена" if old_subscription_end and old_subscription_end > now else "куплена"
+            logger.info(
+                "Payment received: user=%s payload=%s plan=%s days=%s stars=%s old_end=%s",
+                message.from_user.id,
+                payload,
+                plan_id,
+                plan["duration_days"],
+                message.successful_payment.total_amount,
+                old_subscription_end,
+            )
+
             # Обновляем подписку
-            success = await update_subscription_days(message.from_user.id, plan["duration_days"])
+            success = await update_subscription_days(message.from_user.id, int(plan["duration_days"]))
             if success:
                 await create_payment_record(
                     telegram_id=message.from_user.id,
@@ -352,6 +363,13 @@ async def process_successful_payment(message: Message, bot: Bot):
                     stars_amount=stars_price,
                 )
                 updated_user = await get_user(message.from_user.id)
+                logger.info(
+                    "Subscription updated after payment: user=%s old_end=%s new_end=%s plan=%s",
+                    message.from_user.id,
+                    old_subscription_end,
+                    updated_user.subscription_end if updated_user else None,
+                    plan_id,
+                )
                 vpn_sync_ok = True
                 vpn_sync_text = ""
                 if updated_user and updated_user.vless_profile_data:
@@ -369,6 +387,13 @@ async def process_successful_payment(message: Message, bot: Bot):
                             vpn_sync_text = "\n\n⚠️ Подписка в боте продлена, но 3x-ui временно недоступна для проверки профиля. Попробуйте подключиться позже."
                         else:
                             vpn_sync_ok = await sync_vpn_expiry(updated_user.vless_profile_data, updated_user.subscription_end)
+                            logger.info(
+                                "3x-ui sync after payment: user=%s email=%s new_end=%s ok=%s",
+                                updated_user.telegram_id,
+                                email,
+                                updated_user.subscription_end,
+                                vpn_sync_ok,
+                            )
                             if not vpn_sync_ok:
                                 vpn_sync_text = "\n\n⚠️ Подписка в боте продлена, но срок VPN профиля не обновился. Напишите администратору."
 
@@ -392,8 +417,26 @@ async def process_successful_payment(message: Message, bot: Bot):
             else:
                 await message.answer("❌ Ошибка при обновлении подписки")
     except Exception as e:
-        logger.error(f"🛑 Successful payment processing error: {e}")
-        await message.answer("❌ Ошибка при обработке платежа")
+        logger.exception(f"🛑 Successful payment processing error: {e}")
+        try:
+            await message.answer(
+                "⚠️ Оплата получена, но при продлении возникла ошибка. "
+                "Администратор уже получил уведомление, подписку нужно проверить вручную."
+            )
+        except Exception:
+            pass
+
+        for admin_id in config.ADMINS:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    "🛑 Ошибка обработки успешной оплаты\n"
+                    f"Пользователь: `{message.from_user.full_name}` | `{message.from_user.id}`\n"
+                    f"Ошибка: `{e}`",
+                    parse_mode="Markdown",
+                )
+            except Exception as notify_error:
+                logger.error(f"🛑 Failed to notify admin {admin_id} about payment error: {notify_error}")
 
 @router.callback_query(F.data == "admin_menu")
 async def admin_menu(callback: CallbackQuery):
@@ -462,7 +505,7 @@ async def admin_add_time_amount(message: Message, state: FSMContext):
         with Session() as session:
             user = session.query(User).filter_by(telegram_id=user_id).first()
             if user:
-                if user.subscription_end > datetime.utcnow():
+                if user.subscription_end and user.subscription_end > datetime.utcnow():
                     user.subscription_end += timedelta(seconds=total_seconds)
                 else:
                     user.subscription_end = datetime.utcnow() + timedelta(seconds=total_seconds)
@@ -518,6 +561,9 @@ async def admin_remove_time_amount(message: Message, state: FSMContext):
         with Session() as session:
             user = session.query(User).filter_by(telegram_id=user_id).first()
             if user:
+                if not user.subscription_end:
+                    await message.answer("❌ У пользователя еще нет активной даты подписки")
+                    return
                 new_end = user.subscription_end - timedelta(seconds=total_seconds)
                 # Проверяем, чтобы не ушло в прошлое
                 if new_end < datetime.utcnow():

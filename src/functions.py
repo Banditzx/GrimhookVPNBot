@@ -296,7 +296,28 @@ class XUIAPI:
                     if "updated_at" in client:
                         client["updated_at"] = int(time.time() * 1000)
                     settings["clients"] = clients
-                    return await self.update_inbound(config.INBOUND_ID, self._build_update_data(inbound, settings))
+                    updated = await self.update_inbound(config.INBOUND_ID, self._build_update_data(inbound, settings))
+                    if not updated:
+                        logger.error(f"🛑 3x-ui did not accept expiry update for {email}")
+                        return False
+
+                    refreshed = await self.get_client_by_email(email)
+                    if not refreshed:
+                        logger.error(f"🛑 Could not verify expiry update for {email}: client not found after update")
+                        return False
+
+                    actual_expiry = int(refreshed.get("expiryTime") or 0)
+                    if actual_expiry != expiry_time:
+                        logger.error(
+                            "🛑 3x-ui expiry verification failed for %s: expected=%s actual=%s",
+                            email,
+                            expiry_time,
+                            actual_expiry,
+                        )
+                        return False
+
+                    logger.info("✅ 3x-ui expiry verified for %s: %s", email, expiry_time)
+                    return True
 
             logger.error(f"🛑 Client {email} not found in inbound {config.INBOUND_ID}")
             return False
