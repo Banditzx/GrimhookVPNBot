@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, func
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, func, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -60,8 +60,31 @@ class SupportMessage(Base):
 engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
 Session = sessionmaker(bind=engine)
 
+def cleanup_invalid_datetime_values():
+    """Normalize empty datetime strings before ORM DateTime processors read them."""
+    datetime_columns = {
+        "users": ("registration_date", "subscription_end"),
+        "static_profiles": ("created_at",),
+        "payment_records": ("created_at",),
+        "support_messages": ("created_at",),
+    }
+    with engine.begin() as connection:
+        for table_name, columns in datetime_columns.items():
+            for column_name in columns:
+                result = connection.execute(
+                    text(f"UPDATE {table_name} SET {column_name} = NULL WHERE {column_name} = ''")
+                )
+                if result.rowcount:
+                    logger.warning(
+                        "Fixed %s empty datetime values in %s.%s",
+                        result.rowcount,
+                        table_name,
+                        column_name,
+                    )
+
 async def init_db():
     Base.metadata.create_all(engine)
+    cleanup_invalid_datetime_values()
     with Session() as session:
         users = session.query(User).filter(User.subscription_end != None).all()
         reset_count = 0

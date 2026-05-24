@@ -839,8 +839,9 @@ elif menu == "👥 Пользователи":
                     is_adm = st.checkbox("Права администратора", value=bool(row['is_admin']))
                     
                     if st.form_submit_button("💾 Сохранить"):
+                        subscription_value = s_end.strip() or None
                         conn.execute("UPDATE users SET full_name=?, username=?, is_admin=?, subscription_end=? WHERE id=?", 
-                                     (f_name, u_name, 1 if is_adm else 0, s_end, row['id']))
+                                     (f_name, u_name, 1 if is_adm else 0, subscription_value, row['id']))
                         conn.commit()
                         st.success("Данные обновлены")
                         st.rerun()
