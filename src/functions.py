@@ -119,7 +119,7 @@ class XUIAPI:
             return None
 
         try:
-            settings = json.loads(inbound["settings"])
+            settings = self._json_field(inbound.get("settings"), {})
             clients = settings.get("clients", [])
             for client in clients:
                 if client.get("email") == email:
@@ -128,6 +128,16 @@ class XUIAPI:
         except Exception as e:
             logger.exception(f"🛑 Get client by email error: {e}")
             return None
+
+    def _json_field(self, value, default):
+        if isinstance(value, str):
+            try:
+                return json.loads(value) if value else default
+            except Exception:
+                return default
+        if value is None:
+            return default
+        return value
 
     def _build_update_data(self, inbound: dict, settings: dict) -> dict:
         return {
@@ -150,13 +160,7 @@ class XUIAPI:
         return "".join(random.choice(alphabet) for _ in range(length))
 
     def _get_stream_settings(self, inbound: dict) -> dict:
-        stream_settings = inbound.get("streamSettings") or {}
-        if isinstance(stream_settings, str):
-            try:
-                return json.loads(stream_settings)
-            except Exception:
-                return {}
-        return stream_settings
+        return self._json_field(inbound.get("streamSettings"), {})
 
     def _build_client(self, protocol: str, email: str, expiry_time: int, telegram_id: str = "") -> dict:
         base_client = {
@@ -209,7 +213,7 @@ class XUIAPI:
             return None
 
         try:
-            settings = json.loads(inbound["settings"])
+            settings = self._json_field(inbound.get("settings"), {})
             clients = settings.get("clients", [])
 
             protocol = inbound.get("protocol", "vless")
@@ -246,7 +250,7 @@ class XUIAPI:
             return None
 
         try:
-            settings = json.loads(inbound["settings"])
+            settings = self._json_field(inbound.get("settings"), {})
             clients = settings.get("clients", [])
 
             protocol = inbound.get("protocol", "vless")
@@ -286,7 +290,7 @@ class XUIAPI:
             return False
 
         try:
-            settings = json.loads(inbound["settings"])
+            settings = self._json_field(inbound.get("settings"), {})
             clients = settings.get("clients", [])
             expiry_time = self._datetime_to_ms(subscription_end)
 
@@ -338,7 +342,7 @@ class XUIAPI:
             return False
 
         try:
-            settings = json.loads(inbound["settings"])
+            settings = self._json_field(inbound.get("settings"), {})
             clients = settings.get("clients", [])
             new_clients = [client for client in clients if client.get("email") != email]
 
