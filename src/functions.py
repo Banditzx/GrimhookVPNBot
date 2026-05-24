@@ -162,6 +162,44 @@ class XUIAPI:
     def _get_stream_settings(self, inbound: dict) -> dict:
         return self._json_field(inbound.get("streamSettings"), {})
 
+    def _first_value(self, value, default=""):
+        if isinstance(value, list):
+            return value[0] if value else default
+        return value or default
+
+    def _get_reality_connection_params(self, stream_settings: dict) -> dict:
+        reality = stream_settings.get("realitySettings") or {}
+        reality_settings = reality.get("settings") or {}
+        return {
+            "public_key": (
+                reality_settings.get("publicKey")
+                or reality.get("publicKey")
+                or config.REALITY_PUBLIC_KEY
+            ),
+            "fingerprint": (
+                reality_settings.get("fingerprint")
+                or reality.get("fingerprint")
+                or config.REALITY_FINGERPRINT
+            ),
+            "server_name": (
+                reality_settings.get("serverName")
+                or self._first_value(reality_settings.get("serverNames"))
+                or self._first_value(reality.get("serverNames"))
+                or self._first_value(config.REALITY_SNI.split(","))
+            ),
+            "short_id": (
+                reality_settings.get("shortId")
+                or self._first_value(reality_settings.get("shortIds"))
+                or self._first_value(reality.get("shortIds"))
+                or self._first_value(config.REALITY_SHORT_ID.split(","))
+            ),
+            "spider_x": (
+                reality_settings.get("spiderX")
+                or reality.get("spiderX")
+                or config.REALITY_SPIDER_X
+            ),
+        }
+
     def _build_client(self, protocol: str, email: str, expiry_time: int, telegram_id: str = "") -> dict:
         base_client = {
             "email": email,
@@ -234,6 +272,7 @@ class XUIAPI:
                     "protocol": protocol,
                     "network": stream_settings.get("network", "tcp"),
                     "security": stream_settings.get("security", "reality" if protocol == "vless" else "none"),
+                    "reality": self._get_reality_connection_params(stream_settings),
                     "remark": inbound["remark"],
                 }
             return None
@@ -270,6 +309,7 @@ class XUIAPI:
                     "protocol": protocol,
                     "network": stream_settings.get("network", "tcp"),
                     "security": stream_settings.get("security", "reality" if protocol == "vless" else "none"),
+                    "reality": self._get_reality_connection_params(stream_settings),
                     "remark": inbound["remark"],
                 }
             return None
@@ -458,13 +498,15 @@ def generate_vless_url(profile_data: dict) -> str:
             f"?type={network}&security={security}#{encoded_remark}"
         )
 
-    pbk = config.REALITY_PUBLIC_KEY.strip()
-    fp = config.REALITY_FINGERPRINT.strip()
-    sni = config.REALITY_SNI.split(",")[0].strip()
-    sid = config.REALITY_SHORT_ID.split(",")[0].strip()
+    reality = profile_data.get("reality") or {}
+    pbk = (reality.get("public_key") or config.REALITY_PUBLIC_KEY).strip()
+    fp = (reality.get("fingerprint") or config.REALITY_FINGERPRINT).strip()
+    sni = (reality.get("server_name") or config.REALITY_SNI.split(",")[0]).strip()
+    sid = (reality.get("short_id") or config.REALITY_SHORT_ID.split(",")[0]).strip()
+    spx = quote((reality.get("spider_x") or config.REALITY_SPIDER_X or "/").strip(), safe="")
 
     return (
         f"vless://{profile_data['client_id']}@{config.XUI_HOST}:{profile_data['port']}"
-        f"?type={network}&security={security}&pbk={pbk}&fp={fp}"
-        f"&sni={sni}&sid={sid}&spx=%2F#{encoded_remark}"
+        f"?encryption=none&type={network}&security={security}&pbk={pbk}&fp={fp}"
+        f"&sni={sni}&sid={sid}&spx={spx}#{encoded_remark}"
     )
