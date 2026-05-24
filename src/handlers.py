@@ -784,16 +784,25 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
 
     has_payments = await has_payment_records(user.telegram_id)
 
-    if not profile_data and not has_payments and (not user.subscription_end or user.subscription_end <= now):
-        trial_end = await activate_trial_subscription(user.telegram_id)
-        if not trial_end:
-            await callback.answer("🛑 Не удалось активировать пробный период", show_alert=True)
+    if not user.subscription_end or user.subscription_end <= now:
+        can_start_trial = not profile_data and not has_payments
+        can_start_admin_test = user.is_admin
+
+        if can_start_trial or can_start_admin_test:
+            trial_end = await activate_trial_subscription(user.telegram_id)
+            if not trial_end:
+                await callback.answer("🛑 Не удалось активировать пробный период", show_alert=True)
+                return
+            user = await get_user(user.telegram_id)
+            note = "Тестовый доступ администратора" if can_start_admin_test and not can_start_trial else "Пробный период"
+            await callback.message.answer(
+                f"✅ {note} активирован до `{trial_end.strftime('%d.%m.%Y %H:%M')}`. Сейчас создам VPN профиль.",
+                parse_mode="Markdown"
+            )
+        else:
+            await callback.answer("⚠️ Подписка истекла! Продлите подписку.", show_alert=True)
+            await show_menu(bot, callback.from_user.id, callback.message.message_id)
             return
-        user = await get_user(user.telegram_id)
-        await callback.message.answer(
-            f"✅ Пробный период активирован до `{trial_end.strftime('%d.%m.%Y %H:%M')}`. Сейчас создам VPN профиль.",
-            parse_mode="Markdown"
-        )
 
     if not user.subscription_end or user.subscription_end <= datetime.utcnow():
         await callback.answer("⚠️ Подписка истекла! Продлите подписку.", show_alert=True)
@@ -819,6 +828,11 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
             user = await save_user_profile_data(user.telegram_id, profile_data)
         else:
             await callback.message.answer("🛑 Ошибка при создании профиля. Попробуйте позже.")
+            return
+    elif profile_data:
+        vpn_sync_ok = await sync_vpn_expiry(user.vless_profile_data, user.subscription_end)
+        if not vpn_sync_ok:
+            await callback.message.answer("⚠️ Не удалось обновить срок VPN профиля в 3x-ui. Попробуйте позже или напишите администратору.")
             return
 
     if not profile_data:
