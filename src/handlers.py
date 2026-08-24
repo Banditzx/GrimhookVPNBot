@@ -15,7 +15,7 @@ from database import (
     User, Session, get_user_stats as db_user_stats,
     create_payment_record, create_support_message, mark_user_profile_deleted, activate_trial_subscription, has_payment_records
 )
-from functions import create_vless_profile, delete_client_by_email, generate_vless_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email, get_client_by_email, is_managed_client_email
+from functions import create_vless_profile, delete_client_by_email, generate_vless_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email, get_client_by_email, get_client_links_by_email, is_managed_client_email
 
 logger = logging.getLogger(__name__)
 
@@ -838,6 +838,13 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
     if not profile_data:
         await callback.message.answer("⚠️ У вас пока нет созданного профиля. Попробуйте позже.")
         return
+
+    email = profile_data.get("email")
+    if is_managed_client_email(email):
+        links = await get_client_links_by_email(email)
+        if links:
+            profile_data["connection_url"] = links[0]
+            user = await save_user_profile_data(user.telegram_id, profile_data)
 
     vless_url = generate_vless_url(profile_data)
     text = (

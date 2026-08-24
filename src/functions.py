@@ -66,7 +66,7 @@ class XUIAPI:
         )
         kwargs["headers"] = headers
 
-        prefixes = ["/api/inbounds", "/panel/api/inbounds", "/xui/API/inbounds"]
+        prefixes = ["/panel/api/inbounds", "/api/inbounds", "/xui/API/inbounds"]
 
         for prefix in prefixes:
             url = f"{self.full_base_url.rstrip('/')}{prefix}{path}"
@@ -89,6 +89,53 @@ class XUIAPI:
                 logger.debug(f"3x-ui request failed for {prefix}{path}: {e}")
                 continue
         return None
+
+    async def _panel_request(self, method, path, **kwargs):
+        """Запрос к актуальному 3x-ui 3.x API под /panel/api/*."""
+        if not self.session:
+            self.cookie_jar = aiohttp.CookieJar(unsafe=True)
+            self.session = aiohttp.ClientSession(
+                cookie_jar=self.cookie_jar,
+                trust_env=True,
+            )
+
+        headers = kwargs.pop("headers", {})
+        headers.update(
+            {
+                "Authorization": f"Bearer {config.XUI_TOKEN}",
+                "Accept": "application/json",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            }
+        )
+        kwargs["headers"] = headers
+        url = f"{self.full_base_url.rstrip('/')}{path}"
+
+        try:
+            request_method = self.session.get if method == "GET" else self.session.post
+            async with request_method(url, ssl=False, **kwargs) as resp:
+                raw = await resp.text()
+                if resp.status != 200:
+                    logger.error("3x-ui %s %s failed: status=%s body=%s", method, path, resp.status, raw[:300])
+                    return None
+
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    logger.error("3x-ui %s %s returned non-json body: %s", method, path, raw[:300])
+                    return None
+
+                if not data.get("success"):
+                    logger.warning("3x-ui %s %s rejected: %s", method, path, data.get("msg"))
+                    return False
+
+                return data.get("obj") if "obj" in data and data.get("obj") is not None else True
+        except Exception as e:
+            logger.exception("3x-ui %s %s request error: %s", method, path, e)
+            return None
 
     async def get_inbound(self, inbound_id: int):
         return await self._request("GET", f"/get/{inbound_id}")
@@ -114,20 +161,25 @@ class XUIAPI:
         if not await self.login():
             return None
 
-        inbound = await self.get_inbound(config.INBOUND_ID)
-        if not inbound:
+        quoted_email = quote(email, safe="")
+        result = await self._panel_request("GET", f"/panel/api/clients/get/{quoted_email}")
+        if result is None:
             return None
-
-        try:
-            settings = self._json_field(inbound.get("settings"), {})
-            clients = settings.get("clients", [])
-            for client in clients:
-                if client.get("email") == email:
-                    return client
+        if result is False:
             return False
-        except Exception as e:
-            logger.exception(f"🛑 Get client by email error: {e}")
-            return None
+        return result
+
+    async def get_client_links(self, email: str) -> list[str]:
+        if not is_managed_client_email(email):
+            logger.warning(f"Ignored unmanaged 3x-ui client links lookup: {email}")
+            return []
+
+        if not await self.login():
+            return []
+
+        quoted_email = quote(email, safe="")
+        result = await self._panel_request("GET", f"/panel/api/clients/links/{quoted_email}")
+        return result if isinstance(result, list) else []
 
     def _json_field(self, value, default):
         if isinstance(value, str):
@@ -251,31 +303,39 @@ class XUIAPI:
             return None
 
         try:
-            settings = self._json_field(inbound.get("settings"), {})
-            clients = settings.get("clients", [])
-
             protocol = inbound.get("protocol", "vless")
             stream_settings = self._get_stream_settings(inbound)
-            email = f"user_{telegram_id}_{random.randint(1000, 9999)}"
+            email = f"{config.XUI_MANAGED_CLIENT_PREFIX}{telegram_id}_{random.randint(1000, 9999)}"
             expire_at = self._datetime_to_ms(subscription_end)
             new_client = self._build_client(protocol, email, expire_at, str(telegram_id))
 
-            clients.append(new_client)
-            settings["clients"] = clients
+            created = await self._panel_request(
+                "POST",
+                "/panel/api/clients/add",
+                json={"client": new_client, "inboundIds": [config.INBOUND_ID]},
+            )
+            if not created:
+                logger.error("🛑 3x-ui did not create client %s on inbound %s", email, config.INBOUND_ID)
+                return None
 
-            if await self.update_inbound(config.INBOUND_ID, self._build_update_data(inbound, settings)):
-                return {
-                    "client_id": new_client.get("id") or new_client.get("password"),
-                    "password": new_client.get("password"),
-                    "email": email,
-                    "port": inbound["port"],
-                    "protocol": protocol,
-                    "network": stream_settings.get("network", "tcp"),
-                    "security": stream_settings.get("security", "reality" if protocol == "vless" else "none"),
-                    "reality": self._get_reality_connection_params(stream_settings),
-                    "remark": inbound["remark"],
-                }
-            return None
+            created_client = await self.get_client_by_email(email)
+            if not created_client:
+                logger.error("🛑 Created client %s is not readable after add", email)
+                return None
+
+            links = await self.get_client_links(email)
+            return {
+                "client_id": created_client.get("id") or new_client.get("id") or created_client.get("password") or new_client.get("password"),
+                "password": created_client.get("password") or new_client.get("password"),
+                "email": email,
+                "port": inbound["port"],
+                "protocol": protocol,
+                "network": stream_settings.get("network", "tcp"),
+                "security": stream_settings.get("security", "reality" if protocol == "vless" else "none"),
+                "reality": self._get_reality_connection_params(stream_settings),
+                "remark": inbound["remark"],
+                "connection_url": links[0] if links else None,
+            }
         except Exception as e:
             logger.exception(f"🛑 Create profile error: {e}")
             return None
@@ -289,30 +349,38 @@ class XUIAPI:
             return None
 
         try:
-            settings = self._json_field(inbound.get("settings"), {})
-            clients = settings.get("clients", [])
-
             protocol = inbound.get("protocol", "vless")
             stream_settings = self._get_stream_settings(inbound)
             email = f"{config.XUI_MANAGED_CLIENT_PREFIX}static_{profile_name}_{random.randint(100, 999)}"
             new_client = self._build_client(protocol, email, 0)
 
-            clients.append(new_client)
-            settings["clients"] = clients
+            created = await self._panel_request(
+                "POST",
+                "/panel/api/clients/add",
+                json={"client": new_client, "inboundIds": [config.INBOUND_ID]},
+            )
+            if not created:
+                logger.error("🛑 3x-ui did not create static client %s on inbound %s", email, config.INBOUND_ID)
+                return None
 
-            if await self.update_inbound(config.INBOUND_ID, self._build_update_data(inbound, settings)):
-                return {
-                    "client_id": new_client.get("id") or new_client.get("password"),
-                    "password": new_client.get("password"),
-                    "email": email,
-                    "port": inbound["port"],
-                    "protocol": protocol,
-                    "network": stream_settings.get("network", "tcp"),
-                    "security": stream_settings.get("security", "reality" if protocol == "vless" else "none"),
-                    "reality": self._get_reality_connection_params(stream_settings),
-                    "remark": inbound["remark"],
-                }
-            return None
+            created_client = await self.get_client_by_email(email)
+            if not created_client:
+                logger.error("🛑 Created static client %s is not readable after add", email)
+                return None
+
+            links = await self.get_client_links(email)
+            return {
+                "client_id": created_client.get("id") or new_client.get("id") or created_client.get("password") or new_client.get("password"),
+                "password": created_client.get("password") or new_client.get("password"),
+                "email": email,
+                "port": inbound["port"],
+                "protocol": protocol,
+                "network": stream_settings.get("network", "tcp"),
+                "security": stream_settings.get("security", "reality" if protocol == "vless" else "none"),
+                "reality": self._get_reality_connection_params(stream_settings),
+                "remark": inbound["remark"],
+                "connection_url": links[0] if links else None,
+            }
         except Exception as e:
             logger.exception(f"🛑 Create static client error: {e}")
             return None
@@ -325,46 +393,48 @@ class XUIAPI:
         if not await self.login():
             return False
 
-        inbound = await self.get_inbound(config.INBOUND_ID)
-        if not inbound:
-            return False
-
         try:
-            settings = self._json_field(inbound.get("settings"), {})
-            clients = settings.get("clients", [])
+            client = await self.get_client_by_email(email)
+            if client is None:
+                return False
+            if client is False:
+                logger.error(f"🛑 Client {email} not found in 3x-ui")
+                return False
+
             expiry_time = self._datetime_to_ms(subscription_end)
+            update_payload = dict(client)
+            update_payload["expiryTime"] = expiry_time
+            update_payload["enable"] = True
+            if "updated_at" in update_payload:
+                update_payload["updated_at"] = int(time.time() * 1000)
 
-            for client in clients:
-                if client.get("email") == email:
-                    client["expiryTime"] = expiry_time
-                    if "updated_at" in client:
-                        client["updated_at"] = int(time.time() * 1000)
-                    settings["clients"] = clients
-                    updated = await self.update_inbound(config.INBOUND_ID, self._build_update_data(inbound, settings))
-                    if not updated:
-                        logger.error(f"🛑 3x-ui did not accept expiry update for {email}")
-                        return False
+            # These fields describe relationships/derived state and are not part of the client row update payload.
+            for key in ("inboundIds", "externalIds", "links", "clientStats"):
+                update_payload.pop(key, None)
 
-                    refreshed = await self.get_client_by_email(email)
-                    if not refreshed:
-                        logger.error(f"🛑 Could not verify expiry update for {email}: client not found after update")
-                        return False
+            quoted_email = quote(email, safe="")
+            updated = await self._panel_request("POST", f"/panel/api/clients/update/{quoted_email}", json=update_payload)
+            if not updated:
+                logger.error(f"🛑 3x-ui did not accept expiry update for {email}")
+                return False
 
-                    actual_expiry = int(refreshed.get("expiryTime") or 0)
-                    if actual_expiry != expiry_time:
-                        logger.error(
-                            "🛑 3x-ui expiry verification failed for %s: expected=%s actual=%s",
-                            email,
-                            expiry_time,
-                            actual_expiry,
-                        )
-                        return False
+            refreshed = await self.get_client_by_email(email)
+            if not refreshed:
+                logger.error(f"🛑 Could not verify expiry update for {email}: client not found after update")
+                return False
 
-                    logger.info("✅ 3x-ui expiry verified for %s: %s", email, expiry_time)
-                    return True
+            actual_expiry = int(refreshed.get("expiryTime") or 0)
+            if actual_expiry != expiry_time:
+                logger.error(
+                    "🛑 3x-ui expiry verification failed for %s: expected=%s actual=%s",
+                    email,
+                    expiry_time,
+                    actual_expiry,
+                )
+                return False
 
-            logger.error(f"🛑 Client {email} not found in inbound {config.INBOUND_ID}")
-            return False
+            logger.info("✅ 3x-ui expiry verified for %s: %s", email, expiry_time)
+            return True
         except Exception as e:
             logger.exception(f"🛑 Update client expiry error: {e}")
             return False
@@ -377,23 +447,9 @@ class XUIAPI:
         if not await self.login():
             return False
 
-        inbound = await self.get_inbound(config.INBOUND_ID)
-        if not inbound:
-            return False
-
-        try:
-            settings = self._json_field(inbound.get("settings"), {})
-            clients = settings.get("clients", [])
-            new_clients = [client for client in clients if client.get("email") != email]
-
-            if len(clients) == len(new_clients):
-                return False
-
-            settings["clients"] = new_clients
-            return await self.update_inbound(config.INBOUND_ID, self._build_update_data(inbound, settings))
-        except Exception as e:
-            logger.exception(f"🛑 Delete client error: {e}")
-            return False
+        quoted_email = quote(email, safe="")
+        result = await self._panel_request("POST", f"/panel/api/clients/del/{quoted_email}")
+        return bool(result)
 
     async def get_user_stats(self, email: str):
         if not is_managed_client_email(email):
@@ -402,15 +458,17 @@ class XUIAPI:
 
         if not await self.login():
             return {"upload": 0, "download": 0}
-        res = await self._request("GET", f"/getClientTraffics/{email}")
-        if res:
+
+        quoted_email = quote(email, safe="")
+        res = await self._panel_request("GET", f"/panel/api/clients/traffic/{quoted_email}")
+        if isinstance(res, dict):
             return {"upload": res.get("up", 0), "download": res.get("down", 0)}
         return {"upload": 0, "download": 0}
 
     async def get_online_users(self):
         if not await self.login():
             return 0
-        res = await self._request("POST", "/onlines")
+        res = await self._panel_request("POST", "/panel/api/clients/onlines")
         if res and isinstance(res, list):
             return len([user for user in res if config.XUI_MANAGED_CLIENT_PREFIX in str(user)])
         return 0
@@ -459,6 +517,13 @@ async def get_client_by_email(email: str):
     finally:
         await api.close()
 
+async def get_client_links_by_email(email: str):
+    api = XUIAPI()
+    try:
+        return await api.get_client_links(email)
+    finally:
+        await api.close()
+
 
 async def get_global_stats():
     api = XUIAPI()
@@ -485,6 +550,9 @@ async def get_user_stats(email: str):
 
 
 def generate_vless_url(profile_data: dict) -> str:
+    if profile_data.get("connection_url"):
+        return profile_data["connection_url"]
+
     email = profile_data["email"]
     encoded_remark = quote(f"{config.XUI_SERVER_NAME}-{email}")
     protocol = profile_data.get("protocol", "vless")
