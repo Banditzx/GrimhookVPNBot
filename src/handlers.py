@@ -829,11 +829,6 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
         else:
             await callback.message.answer("🛑 Ошибка при создании профиля. Попробуйте позже.")
             return
-    elif profile_data:
-        vpn_sync_ok = await sync_vpn_expiry(user.vless_profile_data, user.subscription_end)
-        if not vpn_sync_ok:
-            await callback.message.answer("⚠️ Не удалось обновить срок VPN профиля в 3x-ui. Попробуйте позже или напишите администратору.")
-            return
 
     if not profile_data:
         await callback.message.answer("⚠️ У вас пока нет созданного профиля. Попробуйте позже.")

@@ -4,7 +4,6 @@ import logging
 import random
 import string
 import time
-import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -252,37 +251,23 @@ class XUIAPI:
             ),
         }
 
-    def _build_client(self, protocol: str, email: str, expiry_time: int, telegram_id: str = "") -> dict:
-        base_client = {
+    def _build_client(self, protocol: str, email: str, expiry_time: int, telegram_id: int | None = None) -> dict:
+        client = {
             "email": email,
             "limitIp": 0,
+            "limitHwid": 0,
             "totalGB": 0,
             "expiryTime": expiry_time,
             "enable": True,
-            "tgId": telegram_id,
             "subId": self._generate_sub_id(),
             "reset": 0,
         }
+        if telegram_id is not None:
+            client["tgId"] = telegram_id
 
-        if protocol == "trojan":
-            now_ms = int(time.time() * 1000)
-            return {
-                **base_client,
-                "password": uuid.uuid4().hex,
-                "comment": "",
-                "created_at": now_ms,
-                "updated_at": now_ms,
-            }
-
-        return {
-            **base_client,
-            "id": str(uuid.uuid4()),
-            "flow": "",
-            "fingerprint": config.REALITY_FINGERPRINT,
-            "publicKey": config.REALITY_PUBLIC_KEY,
-            "shortId": config.REALITY_SHORT_ID.split(",")[0].strip(),
-            "spiderX": config.REALITY_SPIDER_X,
-        }
+        # 3x-ui 3.x /panel/api/clients/add сам генерирует id/password/secret.
+        # Если отправлять protocol-specific поля вручную, новые версии панели могут отклонить payload.
+        return client
 
     def _datetime_to_ms(self, value: datetime) -> int:
         if value.tzinfo is None:
@@ -307,7 +292,7 @@ class XUIAPI:
             stream_settings = self._get_stream_settings(inbound)
             email = f"{config.XUI_MANAGED_CLIENT_PREFIX}{telegram_id}_{random.randint(1000, 9999)}"
             expire_at = self._datetime_to_ms(subscription_end)
-            new_client = self._build_client(protocol, email, expire_at, str(telegram_id))
+            new_client = self._build_client(protocol, email, expire_at, telegram_id)
 
             created = await self._panel_request(
                 "POST",
