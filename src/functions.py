@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 def is_managed_client_email(email: str | None) -> bool:
     return bool(email and email.startswith(config.XUI_MANAGED_CLIENT_PREFIX))
 
+def generate_subscription_url(profile_data: dict) -> str | None:
+    sub_id = profile_data.get("sub_id")
+    if not config.XUI_SUBSCRIPTION_BASE_URL or not isinstance(sub_id, str) or not sub_id.strip():
+        return None
+    return f"{config.XUI_SUBSCRIPTION_BASE_URL}/{quote(sub_id.strip(), safe='')}"
+
 
 class XUIAPI:
     def __init__(self):
@@ -166,7 +172,51 @@ class XUIAPI:
             return None
         if result is False:
             return False
+        if isinstance(result, dict) and isinstance(result.get("client"), dict):
+            return {**result["client"], "inboundIds": result.get("inboundIds", [])}
         return result
+
+    async def ensure_client_inbounds(self, email: str, client: dict | None = None):
+        if not is_managed_client_email(email):
+            logger.warning("Refused to attach unmanaged 3x-ui client")
+            return None
+        if client is None:
+            client = await self.get_client_by_email(email)
+        if not isinstance(client, dict):
+            return None
+        attached_ids = client.get("inboundIds")
+        if not isinstance(attached_ids, list):
+            logger.error("3x-ui client %s response has no inboundIds", email)
+            return None
+        missing_ids = [inbound_id for inbound_id in config.INBOUND_IDS if inbound_id not in attached_ids]
+        if not missing_ids:
+            return client
+        if not await self.login():
+            return None
+
+        quoted_email = quote(email, safe="")
+        result = await self._panel_request(
+            "POST", f"/panel/api/clients/{quoted_email}/attach", json={"inboundIds": missing_ids},
+        )
+        if not result:
+            logger.error("3x-ui client %s could not attach to inbounds %s", email, missing_ids)
+            return None
+        refreshed = await self.get_client_by_email(email)
+        if not isinstance(refreshed, dict) or not set(config.INBOUND_IDS).issubset(refreshed.get("inboundIds") or []):
+            logger.error("3x-ui client %s inbound attachment verification failed", email)
+            return None
+        return refreshed
+
+    async def _get_creation_inbound(self):
+        primary_inbound = None
+        for inbound_id in config.INBOUND_IDS:
+            inbound = await self.get_inbound(inbound_id)
+            if not inbound or inbound.get("enable") is False:
+                logger.error("3x-ui inbound %s is missing, disabled or unavailable; client was not created", inbound_id)
+                return None
+            if primary_inbound is None:
+                primary_inbound = inbound
+        return primary_inbound
 
     async def get_client_links(self, email: str) -> list[str]:
         if not is_managed_client_email(email):
@@ -282,9 +332,8 @@ class XUIAPI:
         if not await self.login():
             return None
 
-        inbound = await self.get_inbound(config.INBOUND_ID)
+        inbound = await self._get_creation_inbound()
         if not inbound:
-            logger.error(f"🛑 Inbound ID {config.INBOUND_ID} не найден в панели")
             return None
 
         try:
@@ -297,12 +346,14 @@ class XUIAPI:
             created = await self._panel_request(
                 "POST",
                 "/panel/api/clients/add",
-                json={"client": new_client, "inboundIds": [config.INBOUND_ID]},
+                json={"client": new_client, "inboundIds": config.INBOUND_IDS},
             )
-            if not created:
-                logger.error("🛑 3x-ui did not create client %s on inbound %s", email, config.INBOUND_ID)
+            if not created and len(config.INBOUND_IDS) == 1:
+                logger.error("3x-ui did not create client %s on inbound %s", email, config.INBOUND_IDS)
                 return None
 
+            # A multi-inbound add can partially succeed. Keep that identity so the
+            # next connect can attach missing inbounds instead of creating duplicates.
             created_client = await self.get_client_by_email(email)
             if not created_client:
                 logger.error("🛑 Created client %s is not readable after add", email)
@@ -310,9 +361,11 @@ class XUIAPI:
 
             links = await self.get_client_links(email)
             return {
-                "client_id": created_client.get("id") or new_client.get("id") or created_client.get("password") or new_client.get("password"),
+                "client_id": created_client.get("uuid") or created_client.get("id") or new_client.get("id") or created_client.get("password") or new_client.get("password"),
                 "password": created_client.get("password") or new_client.get("password"),
                 "email": email,
+                "sub_id": created_client.get("subId") or new_client["subId"],
+                "inbound_ids": created_client.get("inboundIds", []),
                 "port": inbound["port"],
                 "protocol": protocol,
                 "network": stream_settings.get("network", "tcp"),
@@ -329,7 +382,7 @@ class XUIAPI:
         if not await self.login():
             return None
 
-        inbound = await self.get_inbound(config.INBOUND_ID)
+        inbound = await self._get_creation_inbound()
         if not inbound:
             return None
 
@@ -342,10 +395,10 @@ class XUIAPI:
             created = await self._panel_request(
                 "POST",
                 "/panel/api/clients/add",
-                json={"client": new_client, "inboundIds": [config.INBOUND_ID]},
+                json={"client": new_client, "inboundIds": config.INBOUND_IDS},
             )
             if not created:
-                logger.error("🛑 3x-ui did not create static client %s on inbound %s", email, config.INBOUND_ID)
+                logger.error("3x-ui did not create static client %s on inbounds %s", email, config.INBOUND_IDS)
                 return None
 
             created_client = await self.get_client_by_email(email)
@@ -355,9 +408,11 @@ class XUIAPI:
 
             links = await self.get_client_links(email)
             return {
-                "client_id": created_client.get("id") or new_client.get("id") or created_client.get("password") or new_client.get("password"),
+                "client_id": created_client.get("uuid") or created_client.get("id") or new_client.get("id") or created_client.get("password") or new_client.get("password"),
                 "password": created_client.get("password") or new_client.get("password"),
                 "email": email,
+                "sub_id": created_client.get("subId") or new_client["subId"],
+                "inbound_ids": created_client.get("inboundIds", []),
                 "port": inbound["port"],
                 "protocol": protocol,
                 "network": stream_settings.get("network", "tcp"),
@@ -388,6 +443,21 @@ class XUIAPI:
 
             expiry_time = self._datetime_to_ms(subscription_end)
             update_payload = dict(client)
+            # GET returns ClientRecord, while update accepts the protocol Client model.
+            if isinstance(update_payload.get("id"), int):
+                update_payload.pop("id")
+            protocol_id = update_payload.pop("uuid", None)
+            if protocol_id:
+                update_payload["id"] = protocol_id
+            allowed_ips = update_payload.get("allowedIPs")
+            if isinstance(allowed_ips, str):
+                update_payload["allowedIPs"] = [ip.strip() for ip in allowed_ips.split(",") if ip.strip()]
+            if "createdAt" in update_payload:
+                update_payload["created_at"] = update_payload.pop("createdAt")
+            if "updatedAt" in update_payload:
+                update_payload["updated_at"] = update_payload.pop("updatedAt")
+            if isinstance(update_payload.get("reverse"), str):
+                update_payload["reverse"] = json.loads(update_payload["reverse"]) if update_payload["reverse"] else None
             update_payload["expiryTime"] = expiry_time
             update_payload["enable"] = True
             if "updated_at" in update_payload:
@@ -502,6 +572,13 @@ async def get_client_by_email(email: str):
     finally:
         await api.close()
 
+async def ensure_client_inbounds_by_email(email: str, client: dict | None = None):
+    api = XUIAPI()
+    try:
+        return await api.ensure_client_inbounds(email, client)
+    finally:
+        await api.close()
+
 async def get_client_links_by_email(email: str):
     api = XUIAPI()
     try:
@@ -513,7 +590,7 @@ async def get_client_links_by_email(email: str):
 async def get_global_stats():
     api = XUIAPI()
     try:
-        return await api.get_global_stats(config.INBOUND_ID)
+        return await api.get_global_stats(config.INBOUND_IDS[0])
     finally:
         await api.close()
 

@@ -1,9 +1,10 @@
 import asyncio
 import logging
 import json
+from html import escape
 from datetime import datetime, timedelta
 from aiogram import Dispatcher, Router, F, Bot
-from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery
+from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, LinkPreviewOptions
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -16,7 +17,7 @@ from database import (
     create_payment_record, create_support_message, mark_user_profile_deleted, activate_trial_subscription, has_payment_records,
     redeem_activation_code, has_redeemed_codes
 )
-from functions import create_vless_profile, delete_client_by_email, generate_vless_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email, get_client_by_email, get_client_links_by_email, is_managed_client_email
+from functions import create_vless_profile, delete_client_by_email, generate_vless_url, generate_subscription_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email, get_client_by_email, get_client_links_by_email, ensure_client_inbounds_by_email, is_managed_client_email
 
 logger = logging.getLogger(__name__)
 
@@ -818,6 +819,7 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
         return
 
     needs_new_profile = not profile_data or profile_data.get("xui_deleted")
+    client = None
 
     if profile_data and not profile_data.get("xui_deleted"):
         email = profile_data.get("email")
@@ -843,32 +845,66 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
         return
 
     email = profile_data.get("email")
-    if is_managed_client_email(email):
-        links = await get_client_links_by_email(email)
-        if links:
-            profile_data["connection_url"] = links[0]
-            user = await save_user_profile_data(user.telegram_id, profile_data)
+    if len(config.INBOUND_IDS) > 1:
+        client = await ensure_client_inbounds_by_email(email, client if isinstance(client, dict) else None)
+        if client is None:
+            await callback.message.answer(
+                "Не удалось подготовить все подключения в 3x-ui. Подписка сохранена. "
+                "Попробуйте позже или напишите администратору."
+            )
+            return
+    if isinstance(client, dict):
+        # Existing profiles receive the current panel Sub ID on their next connection.
+        profile_data["sub_id"] = client.get("subId")
+        profile_data["inbound_ids"] = client.get("inboundIds", [])
 
-    vless_url = generate_vless_url(profile_data)
-    text = (
-        "🎉 **Ваш VPN профиль готов!**\n\n"
-        "ℹ️ **Инструкция по подключению:**\n"
-        "1. Скачайте приложение для вашей платформы\n"
-        "2. Скопируйте эту ссылку и импортируйте в приложение:\n\n"
-        f"`{vless_url}`\n\n"
-        "3. Активируйте соединение в приложении."
-    )
+    if config.XUI_SUBSCRIPTION_BASE_URL:
+        connection_url = generate_subscription_url(profile_data)
+        if not connection_url:
+            await callback.message.answer(
+                "Не удалось получить ссылку подписки: у профиля отсутствует Sub ID. Напишите администратору."
+            )
+            return
+        await save_user_profile_data(user.telegram_id, profile_data)
+    else:
+        if is_managed_client_email(email):
+            links = await get_client_links_by_email(email)
+            if links:
+                profile_data["connection_url"] = links[0]
+                await save_user_profile_data(user.telegram_id, profile_data)
+        connection_url = generate_vless_url(profile_data)
+
+    if config.XUI_SUBSCRIPTION_BASE_URL:
+        text = (
+            "<b>Ваша VPN-подписка готова</b>\n\n"
+            "Откройте страницу подписки кнопкой ниже или скопируйте ссылку в VPN-приложение:\n\n"
+            f"<code>{escape(connection_url)}</code>\n\n"
+            "Добавьте ссылку как подписку, обновите ее в приложении и выберите подключение. "
+            "В подписке будут доступны подключения, привязанные к вашему профилю."
+        )
+    else:
+        text = (
+            "<b>Ваш VPN-профиль готов</b>\n\n"
+            "Скачайте приложение для вашей платформы и импортируйте ссылку:\n\n"
+            f"<code>{escape(connection_url)}</code>\n\n"
+            "Активируйте соединение в приложении."
+        )
 
     builder = InlineKeyboardBuilder()
+    if config.XUI_SUBSCRIPTION_BASE_URL:
+        builder.button(text="Открыть подписку", url=connection_url)
     builder.button(text='🖥️ Windows [V2RayN]', url='https://github.com/2dust/v2rayN/releases/download/7.13.8/v2rayN-windows-64-desktop.zip')
     builder.button(text='🐧 Linux [NekoBox]', url='https://github.com/MatsuriDayo/nekoray/releases/download/4.0.1/nekoray-4.0.1-2024-12-12-debian-x64.deb')
-    builder.button(text='🍎 Mac [V2RayU]', url='https://github.com/yanue/V2rayU/releases/download/v4.2.6/V2rayU-64.dmg ')
+    builder.button(text='🍎 Mac [V2RayU]', url='https://github.com/yanue/V2rayU/releases/download/v4.2.6/V2rayU-64.dmg')
     builder.button(text='🍏 iOS [V2RayTun]', url='https://apps.apple.com/ru/app/v2raytun/id6476628951')
     builder.button(text='🤖 Android [V2RayNG]', url='https://github.com/2dust/v2rayNG/releases/download/1.10.16/v2rayNG_1.10.16_arm64-v8a.apk')
     builder.button(text="⬅️ Назад", callback_data="back_to_menu")
-    builder.adjust(2, 2, 1, 1)
+    builder.adjust(*((1, 2, 2, 1, 1) if config.XUI_SUBSCRIPTION_BASE_URL else (2, 2, 1, 1)))
 
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode='Markdown')
+    await callback.message.edit_text(
+        text, reply_markup=builder.as_markup(), parse_mode="HTML",
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+    )
 
 @router.callback_query(F.data == "stats")
 async def user_stats(callback: CallbackQuery):

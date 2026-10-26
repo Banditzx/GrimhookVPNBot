@@ -1,6 +1,7 @@
 import math
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Dict, List
 
 from pydantic import BaseModel, Field, field_validator
@@ -37,9 +38,21 @@ class Config(BaseModel):
     XUI_TOKEN: str = os.getenv("XUI_TOKEN", "")
     XUI_HOST: str = os.getenv("XUI_HOST", "")
     XUI_SERVER_NAME: str = os.getenv("XUI_SERVER_NAME", "VPN_SERVER")
-    INBOUND_ID: int = int(os.getenv("INBOUND_ID", "1"))
+    XUI_SUBSCRIPTION_BASE_URL: str = Field(default=os.getenv("XUI_SUBSCRIPTION_BASE_URL", ""), validate_default=True)
+    INBOUND_IDS: List[int] = Field(default_factory=lambda: [1], min_length=1)
     TRIAL_DAYS: int = int(os.getenv("TRIAL_DAYS", "1"))
     XUI_MANAGED_CLIENT_PREFIX: str = os.getenv("XUI_MANAGED_CLIENT_PREFIX", "user_")
+
+    @field_validator("XUI_SUBSCRIPTION_BASE_URL")
+    @classmethod
+    def validate_subscription_base_url(cls, value: str) -> str:
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        parts = urlsplit(value)
+        if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+            raise ValueError("XUI_SUBSCRIPTION_BASE_URL must be an HTTP(S) base URL without credentials, query or fragment")
+        return value
 
     REALITY_PUBLIC_KEY: str = os.getenv("REALITY_PUBLIC_KEY", "")
     REALITY_FINGERPRINT: str = os.getenv("REALITY_FINGERPRINT", "chrome")
@@ -95,12 +108,28 @@ class Config(BaseModel):
             return [value]
         return value or []
 
-    @field_validator("INBOUND_ID", "TRIAL_DAYS", mode="before")
+    @field_validator("TRIAL_DAYS", mode="before")
     @classmethod
     def parse_int(cls, value):
         if isinstance(value, str) and value.isdigit():
             return int(value)
         return value
+
+    @field_validator("INBOUND_IDS", mode="before")
+    @classmethod
+    def parse_inbound_ids(cls, value):
+        if isinstance(value, str):
+            value = value.split(",") if value.strip() else []
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("INBOUND_IDS must be a comma-separated list of positive IDs")
+        ids = []
+        for item in value:
+            if isinstance(item, bool) or not str(item).strip().isdigit() or int(item) <= 0:
+                raise ValueError("INBOUND_IDS must contain only positive integer IDs")
+            inbound_id = int(item)
+            if inbound_id not in ids:
+                ids.append(inbound_id)
+        return ids
 
     @field_validator("STAR_RUB_RATE", "STAR_PRICE_MARKUP_PERCENT", mode="before")
     @classmethod
@@ -132,5 +161,5 @@ class Config(BaseModel):
 
 config = Config(
     ADMINS=os.getenv("ADMINS", ""),
-    INBOUND_ID=os.getenv("INBOUND_ID", "1"),
+    INBOUND_IDS=os.getenv("INBOUND_IDS", "1"),
 )
