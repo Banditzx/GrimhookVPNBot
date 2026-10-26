@@ -29,7 +29,7 @@ class ActivationAdminTests(unittest.TestCase):
                     page.query_params["admin_session"] = create_admin_session(account["id"])
                     page.run()
                     self.assertEqual(list(page.exception), [])
-                    page.sidebar.radio[0].set_value("Коды активации").run()
+                    page.sidebar.radio[0].set_value("🔑 Коды активации").run()
                     self.assertEqual(list(page.exception), [])
                     next(w for w in page.selectbox if w.label == "Срок, месяцев").set_value(12)
                     page.number_input[0].set_value(3)

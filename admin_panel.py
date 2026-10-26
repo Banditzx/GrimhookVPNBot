@@ -200,7 +200,7 @@ def require_admin_auth():
     st.stop()
 
 def render_admin_profile(account: dict):
-    st.header("Профиль")
+    st.header("👤 Профиль")
     st.write(f"Логин: **{account['username']}**")
     with st.form("change_admin_password", clear_on_submit=True):
         current_password = st.text_input("Текущий пароль", type="password", max_chars=256, autocomplete="current-password")
@@ -680,7 +680,7 @@ with st.sidebar:
 
     menu = st.radio(
         "Навигация:",
-        ["📊 Мониторинг", "💳 Транзакции", "Коды активации", "💬 Сообщения", "👥 Пользователи", "Профиль", "📝 Редактор кода", "📋 Логи бота"]
+        ["📊 Мониторинг", "💳 Транзакции", "🔑 Коды активации", "💬 Сообщения", "👥 Пользователи", "👤 Профиль", "📝 Редактор кода", "📋 Логи бота"]
     )
     
     st.divider()
@@ -780,8 +780,8 @@ elif menu == "💳 Транзакции":
     finally:
         conn.close()
 
-elif menu == "Коды активации":
-    st.header("Коды активации")
+elif menu == "🔑 Коды активации":
+    st.header("🔑 Коды активации")
     ensure_db()
     conn = get_conn()
     try:
@@ -982,7 +982,7 @@ elif menu == "👥 Пользователи":
     finally:
         conn.close()
 
-elif menu == "Профиль":
+elif menu == "👤 Профиль":
     render_admin_profile(current_admin)
 
 # --- МЕНЮ: РЕДАКТОР ---

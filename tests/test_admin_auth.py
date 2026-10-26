@@ -128,7 +128,7 @@ class AdminAuthTests(unittest.TestCase):
             page = self.page()
             page.query_params["admin_session"] = auth.create_admin_session(1)
             page.run()
-            page.sidebar.radio[0].set_value("Профиль").run()
+            page.sidebar.radio[0].set_value("👤 Профиль").run()
             for field, value in zip(page.text_input, ("admin", "another-password-123", "another-password-123")):
                 field.set_value(value)
             next(button for button in page.button if button.label == "Сохранить пароль").click().run()

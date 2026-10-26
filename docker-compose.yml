@@ -1,7 +1,6 @@
 services:
   grimhook-vpn-bot:
     build: .
-    container_name: grimhook-vpn-bot
     restart: unless-stopped
     environment:
       BOT_DATABASE_PATH: /app/data/users.db
