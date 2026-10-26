@@ -11,10 +11,10 @@ import asyncio
 import json
 import html
 import secrets
-import hmac
-import hashlib
+import csv
+import io
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import requests
 
@@ -28,15 +28,20 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from config import config
-from database import Base, engine, DB_PATH as BOT_DB_PATH
+from database import (
+    Base, engine, DB_PATH as BOT_DB_PATH,
+    create_activation_codes, revoke_activation_code,
+)
 from functions import delete_client_by_email, is_managed_client_email
+from admin_auth import (
+    ensure_admin_account, authenticate_admin, create_admin_session,
+    get_admin_session, delete_admin_session, change_admin_password,
+)
 
 DB_PATH = str(BOT_DB_PATH)
 Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(page_title="Grimhook VPN Admin Panel", layout="wide")
-
-ADMIN_SESSION_TTL_HOURS = 24 * 7
 
 def _get_query_param(name: str):
     value = st.query_params.get(name)
@@ -44,90 +49,66 @@ def _get_query_param(name: str):
         return value[0] if value else None
     return value
 
-def _sign_admin_session(expires_at: int, nonce: str) -> str:
-    payload = f"{expires_at}:{nonce}"
-    signature = hmac.new(
-        config.ADMIN_PANEL_PASSWORD.encode(),
-        payload.encode(),
-        hashlib.sha256,
-    ).hexdigest()
-    return f"{payload}:{signature}"
-
-def _is_valid_admin_session(token: str | None) -> bool:
-    if not token or not config.ADMIN_PANEL_PASSWORD:
-        return False
-    try:
-        expires_raw, nonce, signature = token.split(":", 2)
-        expires_at = int(expires_raw)
-    except Exception:
-        return False
-
-    if datetime.utcnow().timestamp() > expires_at:
-        return False
-
-    expected = _sign_admin_session(expires_at, nonce)
-    return hmac.compare_digest(token, expected)
-
-def _create_admin_session_token() -> str:
-    expires_at = int((datetime.utcnow() + timedelta(hours=ADMIN_SESSION_TTL_HOURS)).timestamp())
-    return _sign_admin_session(expires_at, secrets.token_urlsafe(18))
-
 def logout_admin():
+    delete_admin_session(_get_query_param("admin_session"))
     st.session_state.pop("admin_authenticated", None)
     st.session_state.pop("admin_auth_until", None)
+    st.session_state.pop("activation_code_batch", None)
     st.query_params.pop("admin_session", None)
     st.rerun()
 
 def require_admin_auth():
-    if not config.ADMIN_PANEL_PASSWORD:
-        st.error("ADMIN_PANEL_PASSWORD не задан в src/.env. Админ-панель заблокирована для безопасности.")
-        st.stop()
-
-    auth_until = st.session_state.get("admin_auth_until")
-    if st.session_state.get("admin_authenticated") and auth_until and datetime.utcnow().timestamp() < auth_until:
-        return
-
     token = _get_query_param("admin_session")
-    if _is_valid_admin_session(token):
-        expires_raw = token.split(":", 1)[0]
-        st.session_state["admin_authenticated"] = True
-        st.session_state["admin_auth_until"] = int(expires_raw)
-        return
+    account = get_admin_session(token)
+    if account:
+        return account
+    st.session_state.pop("activation_code_batch", None)
+    if token:
+        st.query_params.pop("admin_session", None)
 
-    st.markdown(
+    st.html(
         """
         <style>
         [data-testid="stSidebar"], [data-testid="stHeader"] {
-            display: none;
+            display: none !important;
         }
-        .stApp {
-            min-height: 100vh;
+        .stApp:has(.admin-login-brand) {
             background: #0f1318 !important;
         }
-        [data-testid="stAppViewContainer"] > .main {
-            min-height: 100vh;
+        [data-testid="stAppViewContainer"]:has(.admin-login-brand) {
+            background: #0f1318 !important;
+        }
+        [data-testid="stMain"] {
+            min-height: 100dvh;
             display: flex;
             align-items: center;
+            justify-content: center;
+            padding: 24px 16px;
         }
-        .main .block-container {
-            max-width: 380px !important;
-            margin: 0 auto !important;
-            padding: 28px !important;
-            border: 1px solid rgba(255, 140, 60, 0.22);
-            border-radius: 8px;
-            background: #151a20;
-            box-shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
+        [data-testid="stMainBlockContainer"] {
+            flex: 0 1 auto;
+            width: 100% !important;
+            max-width: 400px !important;
+            margin: auto !important;
+            padding: 0 !important;
             box-sizing: border-box;
         }
-        .login-panel {
-            width: 100%;
+        [data-testid="stForm"] {
+            padding: 28px !important;
+            border: 1px solid #343b43 !important;
+            border-radius: 8px;
+            background: #151a20 !important;
+            box-shadow: 0 18px 54px rgba(0, 0, 0, 0.3) !important;
+            box-sizing: border-box;
         }
-        .login-logo {
+        .admin-login-brand {
             display: flex;
-            justify-content: center;
-            margin-bottom: 22px;
+            flex-direction: column;
+            align-items: center;
+            gap: 14px;
+            padding-bottom: 12px;
         }
-        .login-mark {
+        .admin-login-mark {
             width: 52px;
             height: 52px;
             border-radius: 8px;
@@ -140,40 +121,53 @@ def require_admin_auth():
             font-weight: 900;
             line-height: 1;
         }
-        .login-title {
-            margin: 0 0 22px;
+        .admin-login-brand h1 {
+            margin: 0 !important;
+            padding: 0 !important;
             text-align: center;
-            color: #f5f5f5;
-            font-size: 22px;
+            color: #f5f5f5 !important;
+            font-size: 22px !important;
             line-height: 1.2;
-            font-weight: 800;
+            font-weight: 700;
             letter-spacing: 0;
+            text-shadow: none !important;
+            text-transform: none !important;
         }
-        div[data-testid="stTextInput"], div[data-testid="stButton"] {
-            width: 100% !important;
-            max-width: 100% !important;
-            margin-left: 0 !important;
-            margin-right: 0 !important;
-        }
-        div[data-testid="stTextInput"] label {
+        [data-testid="stTextInput"] label {
             color: rgba(245, 245, 245, 0.78) !important;
             font-weight: 600 !important;
             font-size: 13px !important;
         }
-        div[data-testid="stTextInput"] [data-baseweb="input"] {
+        [data-testid="stTextInput"] [data-baseweb="input"] {
             min-height: 44px !important;
+            padding: 0 !important;
             background: #0f1318 !important;
             border: 1px solid rgba(255, 140, 60, 0.26) !important;
             border-radius: 8px !important;
         }
-        div[data-testid="stTextInput"] [data-baseweb="input"]:focus-within {
+        [data-testid="stTextInput"] [data-baseweb="input"]:focus-within {
             border-color: rgba(255, 157, 77, 0.72) !important;
             box-shadow: 0 0 0 1px rgba(255, 157, 77, 0.14) !important;
         }
-        div[data-testid="stTextInput"] input {
+        [data-testid="stTextInput"] input {
             color: #f5f5f5 !important;
+            height: 44px !important;
+            padding: 0 12px !important;
+            background: transparent !important;
         }
-        div[data-testid="stButton"] button {
+        [data-testid="stTextInput"] [data-baseweb="input"] button {
+            flex: 0 0 44px !important;
+            width: 44px !important;
+            height: 44px !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            background: transparent !important;
+            color: #d3dae3 !important;
+            box-shadow: none !important;
+        }
+        [data-testid="stFormSubmitButton"] button {
             height: 44px !important;
             border-radius: 8px !important;
             border: 1px solid rgba(255, 157, 77, 0.4) !important;
@@ -182,28 +176,54 @@ def require_admin_auth():
             font-weight: 800 !important;
             margin-top: 4px !important;
         }
+        @media (max-width: 480px) {
+            [data-testid="stForm"] { padding: 24px !important; }
+        }
         </style>
-        <div class="login-panel">
-            <div class="login-logo"><div class="login-mark">G</div></div>
-            <h1 class="login-title">Grimhook VPN</h1>
-        </div>
-        """,
-        unsafe_allow_html=True,
+        """
     )
 
-    password = st.text_input("Пароль администратора", type="password", label_visibility="visible")
-    if st.button("Войти в админ-панель", use_container_width=True):
-        if hmac.compare_digest(password, config.ADMIN_PANEL_PASSWORD):
-            token = _create_admin_session_token()
-            st.query_params["admin_session"] = token
-            st.session_state["admin_authenticated"] = True
-            st.session_state["admin_auth_until"] = int(token.split(":", 1)[0])
-            st.rerun()
-        else:
-            st.error("Неверный пароль")
+    with st.form("admin_login"):
+        st.html(
+            '<div class="admin-login-brand"><div class="admin-login-mark">G</div>'
+            '<h1>Grimhook VPN</h1></div>'
+        )
+        username = st.text_input("Логин", key="login_username", max_chars=80, autocomplete="username")
+        password = st.text_input("Пароль", type="password", key="login_password", max_chars=256, autocomplete="current-password")
+        submitted = st.form_submit_button("Войти", width="stretch")
+        if submitted:
+            account = authenticate_admin(username, password)
+            if account:
+                st.query_params["admin_session"] = create_admin_session(account["id"])
+                st.rerun()
+            st.error("Неверный логин или пароль")
     st.stop()
 
-st.markdown(
+def render_admin_profile(account: dict):
+    st.header("Профиль")
+    st.write(f"Логин: **{account['username']}**")
+    with st.form("change_admin_password", clear_on_submit=True):
+        current_password = st.text_input("Текущий пароль", type="password", max_chars=256, autocomplete="current-password")
+        new_password = st.text_input("Новый пароль", type="password", max_chars=256, autocomplete="new-password")
+        repeated_password = st.text_input("Повторите новый пароль", type="password", max_chars=256, autocomplete="new-password")
+        submitted = st.form_submit_button("Сохранить пароль")
+    if submitted:
+        if new_password != repeated_password:
+            st.error("Новые пароли не совпадают")
+            return
+        try:
+            changed = change_admin_password(account["id"], current_password, new_password)
+        except ValueError as error:
+            st.error(str(error))
+            return
+        if changed:
+            st.query_params["admin_session"] = create_admin_session(account["id"])
+            st.session_state["password_changed"] = True
+            st.rerun()
+        else:
+            st.error("Неверный текущий пароль")
+
+st.html(
     """
     <style>
     :root {
@@ -475,11 +495,14 @@ st.markdown(
         }
     }
     </style>
-    """,
-    unsafe_allow_html=True,
+    """
 )
 
-require_admin_auth()
+Base.metadata.create_all(engine)
+ensure_admin_account()
+current_admin = require_admin_auth()
+if st.session_state.pop("password_changed", False):
+    st.success("Пароль изменен. Остальные сессии завершены.")
 
 def ensure_db():
     Base.metadata.create_all(engine)
@@ -651,12 +674,13 @@ def get_bot_status():
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Grimhook VPN")
+    st.caption(f"Вы вошли как {current_admin['username']}")
     if st.button("🚪 Выйти", use_container_width=True):
         logout_admin()
 
     menu = st.radio(
         "Навигация:",
-        ["📊 Мониторинг", "💳 Транзакции", "💬 Сообщения", "👥 Пользователи", "📝 Редактор кода", "📋 Логи бота"]
+        ["📊 Мониторинг", "💳 Транзакции", "Коды активации", "💬 Сообщения", "👥 Пользователи", "Профиль", "📝 Редактор кода", "📋 Логи бота"]
     )
     
     st.divider()
@@ -753,6 +777,106 @@ elif menu == "💳 Транзакции":
             )
         else:
             st.caption("Telegram Stars транзакций пока нет")
+    finally:
+        conn.close()
+
+elif menu == "Коды активации":
+    st.header("Коды активации")
+    ensure_db()
+    conn = get_conn()
+    try:
+        counts = conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(used_at IS NULL AND revoked_at IS NULL), 0) AS available, "
+            "COALESCE(SUM(used_at IS NOT NULL), 0) AS used FROM activation_codes"
+        ).fetchone()
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Всего кодов", counts["total"])
+        col2.metric("Доступно", counts["available"])
+        col3.metric("Активировано", counts["used"])
+
+        st.subheader("Создать коды")
+        with st.form("create_activation_codes"):
+            duration_col, quantity_col = st.columns(2)
+            months = duration_col.selectbox("Срок, месяцев", list(range(1, 13)))
+            quantity = quantity_col.number_input("Количество", min_value=1, max_value=100, value=1, step=1)
+            note = st.text_input("Примечание к партии", max_chars=200)
+            st.caption("Один месяц — 30 дней. Каждый код можно активировать один раз.")
+            submitted = st.form_submit_button("Создать коды", use_container_width=True)
+        if submitted:
+            try:
+                codes = create_activation_codes(months, int(quantity), note)
+            except Exception:
+                st.error("Не удалось создать коды. Повторите попытку.")
+            else:
+                export = io.StringIO(newline="")
+                writer = csv.writer(export)
+                writer.writerow(["code", "months", "days"])
+                writer.writerows((code, months, months * 30) for code in codes)
+                st.session_state["activation_code_batch"] = {
+                    "codes": codes, "months": months, "csv": export.getvalue(),
+                    "filename": f"vpn-codes-{datetime.utcnow():%Y%m%d-%H%M%S}-{secrets.token_hex(3)}.csv",
+                }
+                st.rerun()
+
+        batch = st.session_state.get("activation_code_batch")
+        if batch:
+            st.success(f"Создано кодов: {len(batch['codes'])}. Срок: {batch['months']} мес.")
+            st.warning("Скачайте ключи перед выходом. В базе полные ключи не хранятся, восстановить их нельзя.")
+            st.code("\n".join(batch["codes"]), language=None)
+            download_col, clear_col = st.columns(2)
+            download_col.download_button(
+                "Скачать CSV", batch["csv"].encode("utf-8-sig"),
+                file_name=batch["filename"], mime="text/csv", use_container_width=True,
+            )
+            if clear_col.button("Скрыть созданные ключи", use_container_width=True):
+                del st.session_state["activation_code_batch"]
+                st.rerun()
+
+        st.subheader("История кодов")
+        status = st.selectbox("Статус", ["Все", "Доступные", "Активированные", "Отозванные"])
+        search = st.text_input("Поиск по окончанию ключа, Telegram ID или примечанию", max_chars=200).strip()
+        conditions = []
+        params = []
+        if status == "Доступные":
+            conditions.append("used_at IS NULL AND revoked_at IS NULL")
+        elif status == "Активированные":
+            conditions.append("used_at IS NOT NULL")
+        elif status == "Отозванные":
+            conditions.append("revoked_at IS NOT NULL")
+        if search:
+            conditions.append("(instr(code_hint, ?) > 0 OR instr(COALESCE(note, ''), ?) > 0 OR CAST(used_by AS TEXT) = ?)")
+            params.extend([search.upper(), search, search])
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = conn.execute(
+            "SELECT * FROM activation_codes" + where + " ORDER BY id DESC LIMIT 200", params,
+        ).fetchall()
+        if rows:
+            st.dataframe(pd.DataFrame([{
+                "ID": row["id"], "Код": row["code_hint"], "Месяцев": row["months"],
+                "Статус": "Активирован" if row["used_at"] else "Отозван" if row["revoked_at"] else "Доступен",
+                "Примечание": row["note"] or "", "Создан (UTC)": format_db_time(row["created_at"]),
+                "Telegram ID": str(row["used_by"]) if row["used_by"] is not None else "",
+                "Активирован (UTC)": format_db_time(row["used_at"]),
+                "Подписка после активации (UTC)": format_db_time(row["subscription_end"]),
+                "Отозван (UTC)": format_db_time(row["revoked_at"]),
+            } for row in rows]), use_container_width=True, hide_index=True)
+            st.caption("Последние 200 кодов по выбранному фильтру.")
+            available = {row["id"]: row for row in rows if not row["used_at"] and not row["revoked_at"]}
+            if available:
+                with st.form("revoke_activation_code"):
+                    selected = st.selectbox(
+                        "Код для отзыва", list(available),
+                        format_func=lambda key: f"#{key} · {available[key]['code_hint']} · {available[key]['months']} мес.",
+                    )
+                    revoke = st.form_submit_button("Отозвать код")
+                if revoke:
+                    if revoke_activation_code(selected):
+                        st.rerun()
+                    else:
+                        st.warning("Код уже активирован или отозван. Обновите страницу.")
+        else:
+            st.caption("Кодов по выбранному фильтру нет.")
     finally:
         conn.close()
 
@@ -857,6 +981,9 @@ elif menu == "👥 Пользователи":
                     st.rerun()
     finally:
         conn.close()
+
+elif menu == "Профиль":
+    render_admin_profile(current_admin)
 
 # --- МЕНЮ: РЕДАКТОР ---
 elif menu == "📝 Редактор кода":

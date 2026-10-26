@@ -5,6 +5,9 @@ from pathlib import Path
 import os
 import json
 import logging
+import hashlib
+import re
+import secrets
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -57,8 +60,108 @@ class SupportMessage(Base):
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class ActivationCode(Base):
+    __tablename__ = 'activation_codes'
+    id = Column(Integer, primary_key=True)
+    code_hash = Column(String(64), unique=True, nullable=False)
+    code_hint = Column(String, nullable=False)
+    months = Column(Integer, nullable=False)
+    note = Column(String, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    used_at = Column(DateTime)
+    used_by = Column(Integer, index=True)
+    subscription_end = Column(DateTime)
+    revoked_at = Column(DateTime)
+
+class AdminAccount(Base):
+    __tablename__ = 'admin_accounts'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(80), unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_login_at = Column(DateTime)
+
+class AdminSession(Base):
+    __tablename__ = 'admin_sessions'
+    id = Column(Integer, primary_key=True)
+    admin_id = Column(Integer, nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True)
+    expires_at = Column(DateTime, nullable=False)
+
 engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
 Session = sessionmaker(bind=engine)
+
+def create_activation_codes(months: int, quantity: int = 1, note: str = "") -> list[str]:
+    if type(months) is not int or not 1 <= months <= 12:
+        raise ValueError("Срок должен быть от 1 до 12 месяцев")
+    if type(quantity) is not int or not 1 <= quantity <= 100:
+        raise ValueError("Количество должно быть от 1 до 100")
+    if len(note) > 200:
+        raise ValueError("Примечание не должно превышать 200 символов")
+
+    codes = []
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    with Session.begin() as session:
+        for _ in range(quantity):
+            secret = "".join(secrets.choice(alphabet) for _ in range(20))
+            code = "GVPN-" + "-".join(secret[i:i + 4] for i in range(0, 20, 4))
+            normalized = code.replace("-", "")
+            session.add(ActivationCode(
+                code_hash=hashlib.sha256(normalized.encode("ascii")).hexdigest(),
+                code_hint=f"GVPN-****-{secret[-4:]}",
+                months=months,
+                note=note.strip(),
+            ))
+            codes.append(code)
+    return codes
+
+def redeem_activation_code(telegram_id: int, code: str) -> dict:
+    if not isinstance(code, str) or len(code) > 100:
+        return {"status": "invalid"}
+    normalized = re.sub(r"[\s-]", "", code).upper()
+    if not re.fullmatch(r"GVPN[A-HJ-NP-Z2-9]{20}", normalized):
+        return {"status": "invalid"}
+    digest = hashlib.sha256(normalized.encode("ascii")).hexdigest()
+
+    with Session() as session:
+        # SQLite serializes writers before we read the code or subscription.
+        session.execute(text("BEGIN IMMEDIATE"))
+        record = session.query(ActivationCode).filter_by(code_hash=digest).first()
+        if not record:
+            return {"status": "invalid"}
+        if record.used_at is not None:
+            return {"status": "used"}
+        if record.revoked_at is not None:
+            return {"status": "revoked"}
+        user = session.query(User).filter_by(telegram_id=telegram_id).first()
+        if not user:
+            return {"status": "user_missing"}
+
+        now = datetime.utcnow()
+        start = max(user.subscription_end or now, now)
+        user.subscription_end = start + timedelta(days=record.months * 30)
+        user.notified = False
+        record.used_at = now
+        record.used_by = telegram_id
+        record.subscription_end = user.subscription_end
+        result = {
+            "status": "activated", "months": record.months,
+            "subscription_end": user.subscription_end,
+        }
+        code_id = record.id
+        session.commit()
+        logger.info("Activation code %s redeemed by user %s", code_id, telegram_id)
+        return result
+
+def revoke_activation_code(code_id: int) -> bool:
+    with Session.begin() as session:
+        changed = session.query(ActivationCode).filter(
+            ActivationCode.id == code_id,
+            ActivationCode.used_at.is_(None),
+            ActivationCode.revoked_at.is_(None),
+        ).update({ActivationCode.revoked_at: datetime.utcnow()}, synchronize_session=False)
+        return changed == 1
 
 def cleanup_invalid_datetime_values():
     """Normalize empty datetime strings before ORM DateTime processors read them."""
@@ -67,6 +170,7 @@ def cleanup_invalid_datetime_values():
         "static_profiles": ("created_at",),
         "payment_records": ("created_at",),
         "support_messages": ("created_at",),
+        "activation_codes": ("created_at", "used_at", "subscription_end", "revoked_at"),
     }
     with engine.begin() as connection:
         for table_name, columns in datetime_columns.items():
@@ -84,6 +188,8 @@ def cleanup_invalid_datetime_values():
 
 async def init_db():
     Base.metadata.create_all(engine)
+    from admin_auth import ensure_admin_account
+    ensure_admin_account()
     cleanup_invalid_datetime_values()
     with Session() as session:
         users = session.query(User).filter(User.subscription_end != None).all()
@@ -91,7 +197,8 @@ async def init_db():
         for user in users:
             has_profile = bool(user.vless_profile_data)
             has_payments = session.query(func.count(PaymentRecord.id)).filter_by(telegram_id=user.telegram_id).scalar() > 0
-            if not has_profile and not has_payments:
+            has_codes = session.query(ActivationCode.id).filter_by(used_by=user.telegram_id).first() is not None
+            if not has_profile and not has_payments and not has_codes:
                 user.subscription_end = None
                 user.notified = False
                 reset_count += 1
@@ -216,6 +323,10 @@ async def get_user_stats():
 async def has_payment_records(telegram_id: int) -> bool:
     with Session() as session:
         return session.query(func.count(PaymentRecord.id)).filter_by(telegram_id=telegram_id).scalar() > 0
+
+async def has_redeemed_codes(telegram_id: int) -> bool:
+    with Session() as session:
+        return session.query(ActivationCode.id).filter_by(used_by=telegram_id).first() is not None
 
 async def create_payment_record(
     telegram_id: int,

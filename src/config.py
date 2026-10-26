@@ -29,7 +29,6 @@ load_dotenv(BASE_DIR / ".env")
 
 class Config(BaseModel):
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-    ADMIN_PANEL_PASSWORD: str = os.getenv("ADMIN_PANEL_PASSWORD", "")
     ADMINS: List[int] = Field(default_factory=list)
 
     XUI_API_URL: str = os.getenv("XUI_API_URL", "")

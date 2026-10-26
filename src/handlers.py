@@ -13,7 +13,8 @@ from database import (
     StaticProfile, get_user, create_user, update_subscription_days, 
     get_all_users, create_static_profile, get_static_profiles, 
     User, Session, get_user_stats as db_user_stats,
-    create_payment_record, create_support_message, mark_user_profile_deleted, activate_trial_subscription, has_payment_records
+    create_payment_record, create_support_message, mark_user_profile_deleted, activate_trial_subscription, has_payment_records,
+    redeem_activation_code, has_redeemed_codes
 )
 from functions import create_vless_profile, delete_client_by_email, generate_vless_url, get_user_stats, create_static_client, get_global_stats, get_online_users, update_client_expiry_by_email, get_client_by_email, get_client_links_by_email, is_managed_client_email
 
@@ -34,6 +35,9 @@ class AdminStates(StatesGroup):
     REMOVE_TIME_AMOUNT = State()
     SEND_MESSAGE_TARGET = State()
     SUPPORT_MESSAGE = State()
+
+class ActivationStates(StatesGroup):
+    ENTER_CODE = State()
 
 def split_text(text: str, max_length: int = MAX_MESSAGE_LENGTH) -> list:
     """Разбивает текст на части указанной максимальной длины"""
@@ -92,13 +96,14 @@ async def show_menu(bot: Bot, chat_id: int, message_id: int = None):
     builder.button(text="🔌 Подключиться", callback_data="connect")
     builder.button(text="📋 Статус", callback_data="status")
     builder.button(text="📊 Трафик", callback_data="stats")
+    builder.button(text="Активировать код", callback_data="activate_code")
     builder.button(text="💬 Написать админу", callback_data="support_message")
     builder.button(text="ℹ️ Помощь", callback_data="help")
 
     if user.is_admin:
         builder.button(text="⚠️ Админ. меню", callback_data="admin_menu")
 
-    builder.adjust(2, 2, 2, 1)
+    builder.adjust(2, 2, 1, 2, 1)
 
     if message_id:
         await bot.edit_message_text(
@@ -117,7 +122,8 @@ async def show_menu(bot: Bot, chat_id: int, message_id: int = None):
         )
 
 @router.message(Command("start"))
-async def start_cmd(message: Message, bot: Bot):
+async def start_cmd(message: Message, bot: Bot, state: FSMContext):
+    await state.clear()
     logger.info(f"ℹ️  Start command from {message.from_user.id}")
     user = await get_user(message.from_user.id)
     
@@ -156,10 +162,11 @@ async def start_cmd(message: Message, bot: Bot):
     await show_menu(bot, message.from_user.id)
 
 @router.message(Command("menu"))
-async def menu_cmd(message: Message, bot: Bot):
+async def menu_cmd(message: Message, bot: Bot, state: FSMContext):
+    await state.clear()
     user = await get_user(message.from_user.id)
     if not user:
-        await start_cmd(message, bot)
+        await start_cmd(message, bot, state)
         return
     
     # Проверяем изменения данных
@@ -783,9 +790,10 @@ async def connect_profile(callback: CallbackQuery, bot: Bot):
     now = datetime.utcnow()
 
     has_payments = await has_payment_records(user.telegram_id)
+    has_codes = await has_redeemed_codes(user.telegram_id)
 
     if not user.subscription_end or user.subscription_end <= now:
-        can_start_trial = not profile_data and not has_payments
+        can_start_trial = not profile_data and not has_payments and not has_codes
         can_start_admin_test = user.is_admin
 
         if can_start_trial or can_start_admin_test:
@@ -941,8 +949,9 @@ async def subscription_status(callback: CallbackQuery):
     builder = InlineKeyboardBuilder()
     builder.button(text="⭐ Продлить" if is_active else "⭐ Купить подписку", callback_data="renew_sub")
     builder.button(text="🔌 Подключиться", callback_data="connect")
+    builder.button(text="Активировать код", callback_data="activate_code")
     builder.button(text="⬅️ Назад", callback_data="back_to_menu")
-    builder.adjust(2, 1)
+    builder.adjust(2, 1, 1)
 
     text = (
         "📋 **Статус аккаунта**\n\n"
@@ -955,6 +964,85 @@ async def subscription_status(callback: CallbackQuery):
         f"ℹ️ {renewal_note}"
     )
     await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=builder.as_markup())
+
+@router.callback_query(F.data == "activate_code")
+async def activation_code_start(callback: CallbackQuery, state: FSMContext):
+    if callback.message.chat.type != "private":
+        await callback.answer("Активируйте код в личном чате с ботом.", show_alert=True)
+        return
+    if not await get_user(callback.from_user.id):
+        await callback.answer("Сначала отправьте /start.", show_alert=True)
+        return
+    await callback.answer()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Отмена", callback_data="back_to_menu")
+    await callback.message.answer(
+        "Отправьте код активации одним сообщением.\n"
+        "Если подписка действует, срок добавится к ее дате окончания.",
+        reply_markup=builder.as_markup(),
+    )
+    await state.set_state(ActivationStates.ENTER_CODE)
+
+@router.message(Command("cancel"))
+async def cancel_input(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    await show_menu(bot, message.from_user.id)
+
+@router.message(ActivationStates.ENTER_CODE, F.chat.type == "private")
+async def activation_code_submit(message: Message, state: FSMContext, bot: Bot):
+    if not message.text or message.text.startswith("/"):
+        await message.answer("Отправьте текст кода или /cancel для отмены.")
+        return
+    try:
+        result = await asyncio.to_thread(redeem_activation_code, message.from_user.id, message.text)
+    except Exception:
+        logger.exception("Activation failed for user %s", message.from_user.id)
+        await message.answer("Не удалось активировать код. Попробуйте позже.")
+        return
+
+    errors = {
+        "invalid": "Код не найден. Проверьте его и отправьте еще раз.",
+        "used": "Этот код уже активирован. Повторное использование невозможно.",
+        "revoked": "Этот код отозван. Обратитесь к администратору.",
+        "user_missing": "Профиль не найден. Отправьте /start и повторите активацию.",
+    }
+    if result["status"] != "activated":
+        await message.answer(errors[result["status"]])
+        return
+
+    await state.clear()
+    await message.answer(
+        f"Код активирован. Добавлено дней: {result['months'] * 30}.\n"
+        f"Подписка до: {result['subscription_end'].strftime('%d.%m.%Y %H:%M')} (UTC)."
+    )
+    user = await get_user(message.from_user.id)
+    profile = safe_json_loads(user.vless_profile_data, default={}) if user else {}
+    sync_ok = True
+    if profile and not profile.get("xui_deleted"):
+        email = profile.get("email")
+        if is_managed_client_email(email):
+            try:
+                client = await get_client_by_email(email)
+                if client is False:
+                    await mark_user_profile_deleted(user.telegram_id)
+                elif client is None:
+                    sync_ok = False
+                else:
+                    sync_ok = await sync_vpn_expiry(user.vless_profile_data, user.subscription_end)
+            except Exception:
+                logger.exception("VPN sync after code activation failed for user %s", message.from_user.id)
+                sync_ok = False
+    if not sync_ok:
+        await message.answer(
+            "Подписка сохранена, но срок VPN пока не обновился. "
+            "Бот повторит синхронизацию автоматически. Если доступ не появился, напишите администратору."
+        )
+    else:
+        await message.answer(
+            "Нажмите «Подключиться», чтобы получить ссылку. "
+            "Если прежняя подписка закончилась, используйте новую ссылку в приложении."
+        )
+    await show_menu(bot, message.from_user.id)
 
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery, bot: Bot, state: FSMContext):

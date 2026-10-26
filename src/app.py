@@ -86,9 +86,6 @@ async def update_admins_status():
             user = session.query(User).filter_by(telegram_id=admin_id).first()
             if user:
                 user.is_admin = True
-                if user.subscription_end and user.subscription_end > datetime.utcnow() + timedelta(days=300):
-                    user.subscription_end = datetime.utcnow()
-                    user.notified = False
             else:
                 # Если админа нет в БД, создаем запись
                 new_admin = User(
